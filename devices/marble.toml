@@ -20,11 +20,14 @@ corner_radius = 70
 # vendor_boot holds none of this phone's modules; they are in vendor_dlkm
 # and vendor, where the phone's own modules.dep resolves them from.
 sources = ["vendor_dlkm", "vendor"]
-# The touchscreen: FocalTech's controller over SPI, behind Xiaomi's touch
-# layer, whose input device the touches come in on. xiaomi_touch depends on
-# nothing and goodix_core depends on it, not the other way round, so the
-# fingerprint's core is not listed.
-load = ["focaltech_fts", "xiaomi_touch"]
+# The touchscreen: Goodix's 9916r controller over SPI, behind Xiaomi's touch
+# layer. The device tree names it goodix,9916r-spi, and the driver that binds
+# it is gtx8_spi in goodix_core.ko, which the modules.dep graph has depend on
+# xiaomi_touch.ko and panel_event_notifier.ko. The other panel drivers the
+# phone's own modules.load lists — focaltech_fts, synaptics_dsx, nt36xxx — are
+# for the suppliers another unit of this model may carry, and loading them here
+# brings up no panel: only goodix_ts comes up as an input device.
+load = ["goodix_core"]
 
 # The driver resets the controller as it connects to it, and the controller
 # comes back sending only raw frames, which would need the system's touch
@@ -146,15 +149,13 @@ strength = { lightest = 0.25, strongest = 0.75 }
 user = "system"
 group = "system"
 mode = 0o664
+# Only the nodes the phone makes with this panel up: hand_over gives every
+# path its owner and fails on one that is absent, which would stop the rest
+# of bring_up — the services and the WLAN — from running.
 paths = [
     "/dev/xiaomi-touch",
-    "/dev/xiaomi-touch-knock",
-    "/dev/xiaomi-thp",
-    "/sys/class/touch/tp_dev/fod_status",
-    "/sys/class/touch/touch_dev/gesture_single_tap_state",
     "/sys/class/touch/touch_dev/fod_press_status",
     "/proc/tp_selftest",
-    "/proc/tp_selftest_1",
     "/sys/class/touch/touch_dev/clicktouch_raw",
     "/sys/class/touch/touch_dev/update_rawdata",
     "/sys/class/touch/touch_dev/enable_touch_raw",
@@ -162,7 +163,6 @@ paths = [
     "/sys/class/touch/touch_dev/touch_thp_dump",
     "/sys/class/touch/touch_dev/touch_thp_cmd",
     "/sys/class/touch/touch_dev/suspend_state",
-    "/sys/class/touch/touch_dev/prox_sensor_data",
     "/sys/class/touch/touch_dev/prox_sensor",
     "/sys/class/touch/touch_dev/touch_thp_rx_num",
     "/sys/class/touch/touch_dev/touch_thp_tx_num",
@@ -174,39 +174,10 @@ paths = [
     "/sys/class/touch/touch_dev/touch_thp_upthd",
     "/sys/class/touch/touch_dev/touch_thp_movethd",
     "/sys/class/touch/touch_dev/touch_thp_islandthd",
-    "/sys/class/touch/touch_dev/touch_thp_cmd_data",
-    "/sys/class/touch/touch_dev/palm_sensor_data",
     "/sys/class/touch/touch_dev/palm_sensor",
-    "/sys/class/touch/touch_dev/hold_sensor",
-    "/proc/tp_hal_version",
     "/proc/tp_lockdown_info",
-    "/sys/class/touch/touch_dev/touch_active_status",
-    "/sys/class/touch/touch_dev/touch_finger_status",
-    "/sys/class/touch/touch_dev/touch_irq_no",
-    "/sys/class/touch/touch_dev/touch_sensor",
-    "/sys/class/touch/touch_dev/touch_sensor_ctrl",
-    "/sys/class/touch/touch_dev/touch_thp_film",
-    "/sys/class/touch/touch_dev/touch_thp_mem_notify",
-    "/sys/class/touch/touch_dev/touch_thp_testmode",
-    "/sys/class/touch/touch_dev/touch_thp_testresult",
-    "/sys/class/touch/touch_dev/touch_thp_preset_point",
-    "/sys/class/touch/touch_dev/touch_doze_analysis",
-    "/sys/class/touch/touch_dev/touch_thp_cmd_ready",
-    "/sys/class/touch/touch_dev/touch_ic_buffer",
-    "/sys/class/touch/touch_dev/abnormal_event",
 ]
 
-[[owners]]
-user = "system"
-group = "system"
-mode = 0o666
-paths = [
-    "/dev/mipp_pen0",
-]
-
-# The partitions a backup of the baseband and EFS takes, and what of the
-# data partition a backup leaves out because the secure world keeps it in
-# step with itself.
 [backup]
 efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
 data_skipped = [
