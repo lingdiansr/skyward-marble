@@ -119,6 +119,7 @@ the data partition.
 | 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM (Android 16) |
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
+| 🚧 Redmi Note 12 Turbo | `marble` | OS3.0.5.0.VMRCNXM (Android 15) |
 
 ## Installing Skyward
 
