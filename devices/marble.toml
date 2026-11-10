@@ -28,6 +28,10 @@ sources = ["vendor_dlkm", "vendor"]
 # for the suppliers another unit of this model may carry, and loading them here
 # brings up no panel: only goodix_ts comes up as an input device.
 load = ["goodix_core"]
+# The recovery's own init loads goodix_core from the vendor modules before
+# the Xiaomi touch core it registers with, and it binds to nothing then.
+# Skyward takes it out and puts it back after the core.
+reload = ["goodix_core"]
 
 # The driver resets the controller as it connects to it, and the controller
 # comes back sending only raw frames, which would need the system's touch
@@ -56,7 +60,7 @@ mounted = ["persist"]
 [[service]]
 path = "/vendor/bin/sh"
 args = ["/vendor/bin/init.kernel.post_boot.sh"]
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 oneshot = true
 user = "root"
 groups = ["root", "system", "wakelock", "graphics"]
@@ -65,7 +69,7 @@ groups = ["root", "system", "wakelock", "graphics"]
 # daemon registers; without them the key service cannot use any key.
 [[service]]
 path = "/vendor/bin/qseecomd"
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 user = "root"
 groups = ["root", "drmrpc"]
 
@@ -74,7 +78,7 @@ groups = ["root", "drmrpc"]
 # shared secret, which the phone describes apart from it.
 [[service]]
 path = "/vendor/bin/hw/android.hardware.security.keymint-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
 registers = [
     "android.hardware.security.keymint.IRemotelyProvisionedComponent/default",
@@ -90,7 +94,7 @@ groups = ["system", "drmrpc"]
 # serves it through HIDL, not AIDL.
 [[service]]
 path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 ready_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
 user = "system"
 groups = ["system"]
@@ -99,7 +103,7 @@ groups = ["system"]
 # switches it. It comes last: the phone is usable without it.
 [[service]]
 path = "/vendor/bin/hw/android.hardware.boot@1.2-service"
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 ready_service = "android.hardware.boot@1.2::IBootControl/default"
 user = "root"
 groups = ["root"]
@@ -120,7 +124,7 @@ firmware = [
 ]
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
-libraries = ["/system/lib64", "/vendor/lib64"]
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
 service = "android.hardware.wifi.supplicant@1.4::ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"
 
