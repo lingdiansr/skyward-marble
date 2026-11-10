@@ -1,0 +1,234 @@
+[device]
+codename = "marble"
+brand = "Redmi"
+model = "Redmi Note 12 Turbo"
+ab = true
+soc = { hans = "第二代骁龙®7+移动平台", hant = "Snapdragon® 7+ Gen 2 行動平台", en = "Snapdragon® 7+ Gen 2 Mobile Platform" }
+os_version_prop = "ro.mi.os.version.incremental"
+
+[display]
+# The panel's own mode: 1080 by 2400 at 60, 90 and 120 Hz, as the phone's
+# own modes file lists them, and the density its display reports.
+width = 1080
+height = 2400
+density = 440
+diagonal = 6.67
+# What the display reports as its rounded corners, 70 pixels at each.
+corner_radius = 70
+
+[modules]
+# vendor_boot holds none of this phone's modules; they are in vendor_dlkm
+# and vendor, where the phone's own modules.dep resolves them from.
+sources = ["vendor_dlkm", "vendor"]
+# The touchscreen: FocalTech's controller over SPI, behind Xiaomi's touch
+# layer, whose input device the touches come in on. xiaomi_touch depends on
+# nothing and goodix_core depends on it, not the other way round, so the
+# fingerprint's core is not listed.
+load = ["focaltech_fts", "xiaomi_touch"]
+
+# The driver resets the controller as it connects to it, and the controller
+# comes back sending only raw frames, which would need the system's touch
+# algorithm; a recovery runs none of it. Told through Xiaomi's touch layer,
+# the driver has the controller report positions itself. The phone runs in
+# this state already.
+[touch]
+writes = [{ path = "/sys/class/touch/touch_dev/enable_touch_raw", value = "0" }]
+
+# The WLAN chip's firmware and the secure world's apps are on the modem
+# partition, which the phone mounts at /vendor/firmware_mnt.
+[firmware]
+partition = "modem"
+
+# The persist partition, which the phone mounts at /mnt/vendor/persist. The
+# secure world keeps its own files there through a listener qseecomd
+# registers, and the WLAN's MAC address is there as well.
+[partitions]
+mounted = ["persist"]
+
+# What the phone's own init runs once the system has finished starting: the
+# kernel starts the CPU clusters on the performance governor and Qualcomm's
+# idle driver keeps idle CPUs from powering down until it is told
+# otherwise; the script hands the clusters to WALT and lets idle CPUs power
+# down. It runs before the programs below and needs none of them.
+[[service]]
+path = "/vendor/bin/sh"
+args = ["/vendor/bin/init.kernel.post_boot.sh"]
+libraries = ["/system/lib64", "/vendor/lib64"]
+oneshot = true
+user = "root"
+groups = ["root", "system", "wakelock", "graphics"]
+
+# The secure world reaches back into Android through the listeners this
+# daemon registers; without them the key service cannot use any key.
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/system/lib64", "/vendor/lib64"]
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The key service, which is the only thing that can use the keys the phone
+# wrapped in hardware. The same program serves the secure clock and the
+# shared secret, which the phone describes apart from it.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.security.keymint-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
+registers = [
+    "android.hardware.security.keymint.IRemotelyProvisionedComponent/default",
+    "android.hardware.security.secureclock.ISecureClock/default",
+    "android.hardware.security.sharedsecret.ISharedSecret/default",
+]
+user = "system"
+groups = ["system", "drmrpc"]
+
+# The credential service: it is what the secure world has check the secret
+# behind a screen lock, and the only thing that can hand out the note the
+# key service wants before it will use a key that secret guards. This phone
+# serves it through HIDL, not AIDL.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
+user = "system"
+groups = ["system"]
+
+# The boot control, which says which slot the bootloader starts next and
+# switches it. It comes last: the phone is usable without it.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot@1.2-service"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.boot@1.2::IBootControl/default"
+user = "root"
+groups = ["root"]
+
+# WLAN: Qualcomm's WCN6750-class part is not this phone's; marble carries
+# qca6490 over PCIe, driven by qca_cld3_qca6490 over the cnss2 platform
+# driver. Once fs_ready is written, cnss2 powers the chip up and loads its
+# firmware from the modem partition, and wlan0 appears. The driver reads its
+# settings and the MAC address through the firmware loader, from links the
+# vendor partition keeps in its own firmware folder; the MAC address file
+# the phone actually carries is under persist/qca6490, not persist/wlan.
+[wlan]
+modules = ["qca_cld3_qca6490"]
+writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
+firmware = [
+    { name = "wlan/qca_cld/qca6490/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/qca6490/WCNSS_qcom_cfg.ini" },
+    { name = "wlan/qca_cld/qca6490/wlan_mac.bin", partition = "persist", path = "qca6490/wlan_mac.bin" },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64"]
+service = "android.hardware.wifi.supplicant@1.4::ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+# The update server the stock updater of the Chinese system asks.
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"
+
+# The stock build the recovery is made on: the Chinese system's
+# OS3.0.5.0.VMRCNXM, whose full update package on the phone maker's own
+# download server holds the recovery partition the recovery is built on top
+# of. The package needs a browser's user agent and a referrer to be served.
+[stock]
+version = "OS3.0.5.0.VMRCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.5.0.VMRCNXM/marble-ota_full-OS3.0.5.0.VMRCNXM-user-15.0-727afd7728.zip"
+recovery = "707cc936e55169fcfc208b4faa92bea27310067b1cfebd6d8965ba2ffe400303"
+
+# qcom-hv-haptics. The motor swings at the frequency the phone measures as
+# it boots and the driver keeps, 1705 Hz here; the waveforms the driver
+# keeps play nothing in a recovery, so the click is made from samples at
+# that frequency instead.
+[haptics]
+resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+strength = { lightest = 0.25, strongest = 0.75 }
+
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o664
+paths = [
+    "/dev/xiaomi-touch",
+    "/dev/xiaomi-touch-knock",
+    "/dev/xiaomi-thp",
+    "/sys/class/touch/tp_dev/fod_status",
+    "/sys/class/touch/touch_dev/gesture_single_tap_state",
+    "/sys/class/touch/touch_dev/fod_press_status",
+    "/proc/tp_selftest",
+    "/proc/tp_selftest_1",
+    "/sys/class/touch/touch_dev/clicktouch_raw",
+    "/sys/class/touch/touch_dev/update_rawdata",
+    "/sys/class/touch/touch_dev/enable_touch_raw",
+    "/sys/class/touch/touch_dev/enable_touch_delta",
+    "/sys/class/touch/touch_dev/touch_thp_dump",
+    "/sys/class/touch/touch_dev/touch_thp_cmd",
+    "/sys/class/touch/touch_dev/suspend_state",
+    "/sys/class/touch/touch_dev/prox_sensor_data",
+    "/sys/class/touch/touch_dev/prox_sensor",
+    "/sys/class/touch/touch_dev/touch_thp_rx_num",
+    "/sys/class/touch/touch_dev/touch_thp_tx_num",
+    "/sys/class/touch/touch_dev/touch_thp_x_resolution",
+    "/sys/class/touch/touch_dev/touch_thp_y_resolution",
+    "/sys/class/touch/touch_dev/touch_thp_smooth",
+    "/sys/class/touch/touch_dev/touch_thp_noisefilter",
+    "/sys/class/touch/touch_dev/touch_thp_downthd",
+    "/sys/class/touch/touch_dev/touch_thp_upthd",
+    "/sys/class/touch/touch_dev/touch_thp_movethd",
+    "/sys/class/touch/touch_dev/touch_thp_islandthd",
+    "/sys/class/touch/touch_dev/touch_thp_cmd_data",
+    "/sys/class/touch/touch_dev/palm_sensor_data",
+    "/sys/class/touch/touch_dev/palm_sensor",
+    "/sys/class/touch/touch_dev/hold_sensor",
+    "/proc/tp_hal_version",
+    "/proc/tp_lockdown_info",
+    "/sys/class/touch/touch_dev/touch_active_status",
+    "/sys/class/touch/touch_dev/touch_finger_status",
+    "/sys/class/touch/touch_dev/touch_irq_no",
+    "/sys/class/touch/touch_dev/touch_sensor",
+    "/sys/class/touch/touch_dev/touch_sensor_ctrl",
+    "/sys/class/touch/touch_dev/touch_thp_film",
+    "/sys/class/touch/touch_dev/touch_thp_mem_notify",
+    "/sys/class/touch/touch_dev/touch_thp_testmode",
+    "/sys/class/touch/touch_dev/touch_thp_testresult",
+    "/sys/class/touch/touch_dev/touch_thp_preset_point",
+    "/sys/class/touch/touch_dev/touch_doze_analysis",
+    "/sys/class/touch/touch_dev/touch_thp_cmd_ready",
+    "/sys/class/touch/touch_dev/touch_ic_buffer",
+    "/sys/class/touch/touch_dev/abnormal_event",
+]
+
+[[owners]]
+user = "system"
+group = "system"
+mode = 0o666
+paths = [
+    "/dev/mipp_pen0",
+]
+
+# The partitions a backup of the baseband and EFS takes, and what of the
+# data partition a backup leaves out because the secure world keeps it in
+# step with itself.
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+data_skipped = [
+    "vendor/tzstorage",
+    "vendor/qtee",
+    "vendor/mitee",
+    "vendor/goodix",
+    "vendor/fingerprint",
+    "vendor/fpdata",
+    "vendor/misc/mi_fp",
+]
+
+# Where the phone's own programs keep logs in the data partition.
+[wipe]
+logs = [
+    "/data/miuilog",
+    "/data/vendor/diag",
+    "/data/vendor/bsplog",
+    "/data/vendor/log",
+    "/data/vendor/ramdump",
+    "/data/vendor/ramdump_ssr",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wlan_logs",
+]
