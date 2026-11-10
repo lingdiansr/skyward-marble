@@ -539,7 +539,8 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
     }
     let hardware: Vec<String> = services.iter().filter_map(|s| s.ready_hardware_service.clone()).collect();
     if !hardware.is_empty() {
-        secure::prepare_hardware_directory(&hardware)?;
+        let directory = services.iter().find(|s| s.ready_property.as_deref() == Some("hwservicemanager.ready"));
+        secure::prepare_hardware_directory(&hardware, directory.map(|s| s.path.as_str()))?;
         skyward_sys::kmsg("the directory for the phone's hardware services can run")?;
     }
     // Only a program that has to register with the service directory needs

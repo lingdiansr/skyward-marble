@@ -68,6 +68,10 @@ const HARDWARE_DRIVER_NODE: &str = "/dev/binderfs/hwbinder";
 /// itself off when the running system does not describe it.
 const HARDWARE_DIRECTORY: &str = "android.hidl.manager@1.2::IServiceManager/default";
 
+/// Newer HIDL libraries check this standard path before trying the driver,
+/// even when the directory itself runs from a mounted system partition.
+const HARDWARE_DIRECTORY_PROGRAM: &str = "/system/bin/hwservicemanager";
+
 /// What says the directory is off. It is read by the services, and in a
 /// recovery there is nothing else to set it.
 const DIRECTORY_OFF: &str = "hwservicemanager.disabled";
@@ -85,8 +89,19 @@ const RECOVERY_MANIFEST: &str = "/system/etc/vintf/manifest.xml";
 /// the driver under a name that a recovery, which has the driver's own
 /// filesystem, does not have.
 ///
-/// `wanted` names the hardware services that will be asked for.
-pub fn prepare_hardware_directory(wanted: &[String]) -> Result<()> {
+/// `wanted` names the hardware services that will be asked for; `program`
+/// is the configured hardware service directory, where one is needed.
+pub fn prepare_hardware_directory(wanted: &[String], program: Option<&str>) -> Result<()> {
+    if let Some(program) = program {
+        let path = Path::new(HARDWARE_DIRECTORY_PROGRAM);
+        match fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::os::unix::fs::symlink(program, path).with_context(|| format!("point {HARDWARE_DIRECTORY_PROGRAM} at {program}"))?;
+            }
+            Err(e) => return Err(e).with_context(|| format!("inspect {HARDWARE_DIRECTORY_PROGRAM}")),
+        }
+    }
     // A loader and the lowest libraries are built together and agree
     // between them on how a program's own storage is laid out, so the
     // installed system's programs are loaded by the installed system's
