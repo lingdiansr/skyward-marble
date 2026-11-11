@@ -894,11 +894,24 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     if socket.exists() {
         fs::remove_file(&socket).with_context(|| format!("take away {}", socket.display()))?;
     }
-    let mut path: Vec<String> = cfg.libraries.clone();
+    let crypto = crypto_folder(cfg)?;
+    let mut path: Vec<String> = Vec::new();
+    if let Some(dir) = &crypto {
+        path.push(dir.to_string_lossy().into_owned());
+    }
+    path.extend(cfg.libraries.iter().cloned());
     if let Some(dir) = libraries {
         path.push(dir.to_string_lossy().into_owned());
     }
-    let mut child = Process::new(&cfg.supplicant)
+    let mut command = match &cfg.loader {
+        Some(loader) => {
+            let mut command = Process::new(loader);
+            command.arg(&cfg.supplicant);
+            command
+        }
+        None => Process::new(&cfg.supplicant),
+    };
+    let mut child = command
         .args(["-i", &cfg.interface, "-D", "nl80211", "-c"])
         .arg(&settings)
         .env("LD_LIBRARY_PATH", path.join(":"))
@@ -923,6 +936,34 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
         thread::sleep(Duration::from_millis(100));
     }
     Ok(child)
+}
+
+/// Point the names the supplicant must find at the files the configuration
+/// prefers, ahead of the installed system's libraries: a vendor supplicant
+/// built against the vendor interface's libcrypto needs the one from the
+/// same build.
+fn crypto_folder(cfg: &Config) -> Result<Option<PathBuf>> {
+    if cfg.crypto.is_empty() {
+        return Ok(None);
+    }
+    let dir = Path::new(HOME).join("libs");
+    fs::create_dir_all(&dir).with_context(|| format!("make {}", dir.display()))?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("open {} to the supplicant", dir.display()))?;
+    for from in &cfg.crypto {
+        let name = Path::new(from)
+            .file_name()
+            .with_context(|| format!("{from} names no file"))?;
+        let to = dir.join(name);
+        match fs::remove_file(&to) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("take away {}", to.display())),
+        }
+        std::os::unix::fs::symlink(from, &to)
+            .with_context(|| format!("point {} at {from}", to.display()))?;
+    }
+    Ok(Some(dir))
 }
 
 /// End the supplicant: asked to, where it can be, and killed after a while.

@@ -140,12 +140,13 @@ firmware = [
 ]
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
-# The recovery's own linker and libc are Android 12L, the build the vendor
-# partition was made for; the supplicant must run on those. The stock
-# recovery does not carry libbinder_ndk, so the platform libraries it needs
-# come from the 15.0 system image, kept under a folder of their own so they
-# are only the supplicant's: the recovery itself stays on 12L.
-libraries = ["/system/lib64/a15", "/system/lib64", "/vendor/lib64"]
+# The supplicant is the vendor partition's Android 12L build. The installed
+# system's own linker and platform libraries load it, and the vendor
+# interface's libcrypto/libssl come first, where they still carry sk_dup;
+# the recovery itself stays on its 12L runtime.
+loader = "/mnt/system/system/bin/linker64"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
+crypto = ["/apex/com.android.vndk.v32/lib64/libcrypto.so", "/apex/com.android.vndk.v32/lib64/libssl.so"]
 service = "android.hardware.wifi.supplicant@1.4::ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"
 
