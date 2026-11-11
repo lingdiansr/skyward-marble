@@ -1,9 +1,10 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use skyward_config::ramdisk as paths;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 mod avb;
@@ -67,6 +68,11 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// A tree of files to add under the paths they lie at inside it, for
+        /// libraries a phone's own programs need that a stock recovery does
+        /// not carry.
+        #[arg(long)]
+        extra: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -91,7 +97,9 @@ fn main() -> Result<()> {
         Cmd::List { image } => list(&image),
         Cmd::Cat { image, path } => {
             let rd = Ramdisk::decode(&BootImage::read(&image)?.ramdisk)?;
-            let e = rd.find(&path).with_context(|| format!("{path} is not in the ramdisk"))?;
+            let e = rd
+                .find(&path)
+                .with_context(|| format!("{path} is not in the ramdisk"))?;
             std::io::stdout().write_all(&e.data)?;
             Ok(())
         }
@@ -100,27 +108,52 @@ fn main() -> Result<()> {
             img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode()?;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Boot { kernel, ramdisk, out } => {
+        Cmd::Boot {
+            kernel,
+            ramdisk,
+            out,
+        } => {
             let mut img = BootImage::read(&ramdisk)?;
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
+        Cmd::Recovery {
+            stock,
+            binary,
+            system_init,
+            config,
+            font,
+            mono,
+            mono_license,
+            extra,
+            out,
+        } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
             // A stock recovery ramdisk has no third-party tree; refuse to build
             // on top of another custom recovery.
-            if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
-                anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
+            if let Some(e) = rd
+                .entries
+                .iter()
+                .find(|e| e.name == "FFiles" || e.name.starts_with("twres"))
+            {
+                anyhow::bail!(
+                    "{} holds {}, which is not a stock recovery",
+                    stock.display(),
+                    e.name
+                );
             }
-            let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
+            let read =
+                |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
             // Install scripts look for the commands a stock recovery lacks
             // among its programs, and its unzip there too, a link to ziptool
             // until it points here; the recovery binary is each of them.
-            let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
+            let (_, recovery) = paths::RECOVERY
+                .rsplit_once('/')
+                .expect("the recovery binary is in a folder");
             for command in paths::COMMANDS {
                 rd.link(command, recovery)?;
             }
@@ -136,7 +169,10 @@ fn main() -> Result<()> {
             }
             rd.add(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
             rd.add(BINDER_RC_PATH, 0o644, BINDER_RC.to_vec())?;
-        rd.add(SERVICE_MANAGER_RC_PATH, 0o644, SERVICE_MANAGER_RC.to_vec())?;
+            rd.add(SERVICE_MANAGER_RC_PATH, 0o644, SERVICE_MANAGER_RC.to_vec())?;
+            if let Some(dir) = extra {
+                add_extra(&mut rd, &dir)?;
+            }
             // On an unlocked device adbd keeps root when ro.secure is 0 and
             // lets any computer in without authorization when ro.adb.secure is
             // 0; init lets a later line of a property file override an earlier
@@ -148,15 +184,26 @@ fn main() -> Result<()> {
                 .with_context(|| format!("{} is not in the ramdisk", paths::PROP_DEFAULT))?
                 .data;
             let mut props = without(stock_props, &BUILD_VERSION);
-            props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
+            props.extend_from_slice(
+                b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n",
+            );
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
             let bytes = img.to_bytes()?;
-            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
+            write(
+                &out,
+                &img,
+                &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?,
+            )
         }
         Cmd::Stock { config, out } => {
-            let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
-            println!("version={}\npackage={}\nrecovery={}", stock.version, stock.package, stock.recovery);
+            let stock = skyward_config::DeviceConfig::load(&config)?
+                .stock
+                .with_context(|| format!("{} names no stock build", config.display()))?;
+            println!(
+                "version={}\npackage={}\nrecovery={}",
+                stock.version, stock.package, stock.recovery
+            );
             match out {
                 Some(out) => take_stock_recovery(&stock, &out),
                 None => Ok(()),
@@ -168,31 +215,103 @@ fn main() -> Result<()> {
 /// The partition a recovery is made on, as a full update package names it.
 const RECOVERY: &str = "recovery";
 
+/// Add every regular file under `dir` at the path it lies at inside it, with
+/// its mode, as the files a phone's own programs need that a stock recovery
+/// does not carry.
+fn add_extra(rd: &mut Ramdisk, dir: &Path) -> Result<()> {
+    fn visit(rd: &mut Ramdisk, root: &Path, at: &Path) -> Result<()> {
+        let mut entries = std::fs::read_dir(at)
+            .with_context(|| format!("read {}", at.display()))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("read {}", at.display()))?;
+        entries.sort_by_key(|e| e.path());
+        for entry in entries {
+            let path = entry.path();
+            let meta = entry
+                .metadata()
+                .with_context(|| format!("stat {}", path.display()))?;
+            if meta.is_dir() {
+                visit(rd, root, &path)?;
+            } else if meta.is_file() {
+                let name = path
+                    .strip_prefix(root)
+                    .with_context(|| format!("{} is not under {}", path.display(), root.display()))?
+                    .to_str()
+                    .with_context(|| format!("{} is not a UTF-8 path", path.display()))?;
+                let mode = meta.permissions().mode() & 0o777;
+                rd.add(
+                    name,
+                    mode,
+                    std::fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+                )?;
+            } else {
+                bail!("{} is not a regular file", path.display());
+            }
+        }
+        Ok(())
+    }
+    visit(rd, dir, dir)
+}
+
 /// Take the recovery partition out of the stock build's full update package
 /// on its server, reading only what that partition takes of it, and write it
 /// to `out` once its SHA-256 is the one the configuration names.
 fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
-    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
     // Taken out beside where it goes, so it is moved there whole.
-    let work = tempfile::Builder::new().prefix(".stock").tempdir_in(parent).with_context(|| format!("make a folder in {}", parent.display()))?;
-    let payload = unpayload::Payload::open_url(&stock.package).with_context(|| format!("open {}", stock.package))?;
-    let options = unpayload::ExtractOptions { output_dir: work.path().to_path_buf(), partitions: vec![RECOVERY.into()], ..Default::default() };
+    let work = tempfile::Builder::new()
+        .prefix(".stock")
+        .tempdir_in(parent)
+        .with_context(|| format!("make a folder in {}", parent.display()))?;
+    let payload = unpayload::Payload::open_url(&stock.package)
+        .with_context(|| format!("open {}", stock.package))?;
+    let options = unpayload::ExtractOptions {
+        output_dir: work.path().to_path_buf(),
+        partitions: vec![RECOVERY.into()],
+        ..Default::default()
+    };
     let report = |event: unpayload::Event<'_>| match event {
         unpayload::Event::Started { partitions } => {
             for (name, bytes) in partitions {
                 println!("taking {name} out of the package: {bytes} bytes");
             }
         }
-        unpayload::Event::Extracted(image) => println!("took {} out: {} bytes", image.partition, image.size),
+        unpayload::Event::Extracted(image) => {
+            println!("took {} out: {} bytes", image.partition, image.size)
+        }
         unpayload::Event::Progress { .. } => {}
     };
-    let taken = payload.extract(&options, &report).with_context(|| format!("take {RECOVERY} out of {}", stock.package))?;
-    let image = taken.iter().find(|i| i.partition == RECOVERY).with_context(|| format!("{} holds no {RECOVERY} partition", stock.package))?;
-    let sum: String = image.sha256.as_deref().context("the package's own sum of the image was not checked")?.iter().map(|b| format!("{b:02x}")).collect();
-    ensure!(sum == stock.recovery, "the {RECOVERY} partition in {} has the SHA-256 {sum}, where the configuration names {}", stock.package, stock.recovery);
-    std::fs::rename(&image.path, out).with_context(|| format!("move {} to {}", image.path.display(), out.display()))?;
-    println!("wrote {} ({} bytes), its SHA-256 the one the configuration names", out.display(), image.size);
+    let taken = payload
+        .extract(&options, &report)
+        .with_context(|| format!("take {RECOVERY} out of {}", stock.package))?;
+    let image = taken
+        .iter()
+        .find(|i| i.partition == RECOVERY)
+        .with_context(|| format!("{} holds no {RECOVERY} partition", stock.package))?;
+    let sum: String = image
+        .sha256
+        .as_deref()
+        .context("the package's own sum of the image was not checked")?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    ensure!(
+        sum == stock.recovery,
+        "the {RECOVERY} partition in {} has the SHA-256 {sum}, where the configuration names {}",
+        stock.package,
+        stock.recovery
+    );
+    std::fs::rename(&image.path, out)
+        .with_context(|| format!("move {} to {}", image.path.display(), out.display()))?;
+    println!(
+        "wrote {} ({} bytes), its SHA-256 the one the configuration names",
+        out.display(),
+        image.size
+    );
     Ok(())
 }
 
@@ -200,11 +319,16 @@ fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> 
 /// full update package hold it, which its AVB footer ends.
 fn partition_size(stock: &Path) -> Result<usize> {
     let mut file = File::open(stock).with_context(|| format!("open {}", stock.display()))?;
-    let size = file.metadata().with_context(|| format!("stat {}", stock.display()))?.len();
+    let size = file
+        .metadata()
+        .with_context(|| format!("stat {}", stock.display()))?
+        .len();
     let mut magic = [0u8; 4];
     if size >= 64 {
-        file.seek(SeekFrom::Start(size - 64)).with_context(|| format!("seek in {}", stock.display()))?;
-        file.read_exact(&mut magic).with_context(|| format!("read {}", stock.display()))?;
+        file.seek(SeekFrom::Start(size - 64))
+            .with_context(|| format!("seek in {}", stock.display()))?;
+        file.read_exact(&mut magic)
+            .with_context(|| format!("read {}", stock.display()))?;
     }
     ensure!(
         &magic == b"AVBf",
@@ -221,7 +345,11 @@ fn partition_size(stock: &Path) -> Result<usize> {
 /// build is running, and keys the installed system made are refused when
 /// they say the wrong one, so they are left out here for the recovery to
 /// fill in from the installed system once it has that mounted.
-const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
+const BUILD_VERSION: [&str; 3] = [
+    "ro.build.version.release",
+    "ro.build.version.security_patch",
+    "ro.vendor.build.security_patch",
+];
 
 /// The scheduling profiles a recovery's programs look up by name. A
 /// recovery's cgroup setup mounts no controllers, so of all a system's
@@ -281,7 +409,14 @@ fn list(image: &Path) -> Result<()> {
     }
     let rd = Ramdisk::decode(&img.ramdisk)?;
     for e in &rd.entries {
-        println!("{:06o} {:>5}:{:<5} {:>10}  {}", e.mode, e.uid, e.gid, e.data.len(), e.name);
+        println!(
+            "{:06o} {:>5}:{:<5} {:>10}  {}",
+            e.mode,
+            e.uid,
+            e.gid,
+            e.data.len(),
+            e.name
+        );
     }
     println!("{} entries", rd.entries.len());
     Ok(())
@@ -298,17 +433,32 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         let out = without(props, &BUILD_VERSION);
         let text = String::from_utf8(out).expect("property files are text");
         assert!(!text.contains("ro.build.version.release=13"));
-        assert!(!text.contains("ro.vendor.build.security_patch=2026-10-01"), "the vendor partition's patch level is left out too");
-        assert!(text.contains("ro.build.version.release_or_codename=13"), "a longer name is left alone");
-        assert!(text.contains("ro.vendor.build.security_patch_level=1"), "a longer name is left alone");
+        assert!(
+            !text.contains("ro.vendor.build.security_patch=2026-10-01"),
+            "the vendor partition's patch level is left out too"
+        );
+        assert!(
+            text.contains("ro.build.version.release_or_codename=13"),
+            "a longer name is left alone"
+        );
+        assert!(
+            text.contains("ro.vendor.build.security_patch_level=1"),
+            "a longer name is left alone"
+        );
         assert!(text.contains("ro.build.id=TQ") && text.contains("ro.product.name=ishtar"));
     }
 
     #[test]
     fn the_profiles_name_all_the_recovery_asks_for() {
-        let profiles: serde_json::Value = serde_json::from_slice(TASK_PROFILES).expect("the profiles are JSON");
+        let profiles: serde_json::Value =
+            serde_json::from_slice(TASK_PROFILES).expect("the profiles are JSON");
         let names = |key: &str| -> Vec<String> {
-            profiles[key].as_array().expect("a list").iter().map(|p| p["Name"].as_str().expect("a name").to_string()).collect()
+            profiles[key]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|p| p["Name"].as_str().expect("a name").to_string())
+                .collect()
         };
         let (plain, aggregate) = (names("Profiles"), names("AggregateProfiles"));
         // What libprocessgroup asks for when a program sets its scheduling
@@ -331,12 +481,19 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
             "ServiceCapacityLow",
         ];
         for name in asked {
-            assert!(plain.iter().chain(&aggregate).any(|n| n == name), "{name} is missing");
+            assert!(
+                plain.iter().chain(&aggregate).any(|n| n == name),
+                "{name} is missing"
+            );
         }
         for a in profiles["AggregateProfiles"].as_array().expect("a list") {
             for part in a["Profiles"].as_array().expect("a list") {
                 let part = part.as_str().expect("a name");
-                assert!(plain.iter().any(|n| n == part), "{} is made of {part}, which is not a profile", a["Name"]);
+                assert!(
+                    plain.iter().any(|n| n == part),
+                    "{} is made of {part}, which is not a profile",
+                    a["Name"]
+                );
             }
         }
     }
@@ -350,9 +507,15 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         std::fs::write(&path, &whole).unwrap();
         assert_eq!(partition_size(&path).unwrap(), 8192);
         std::fs::write(&path, &whole[..8000]).unwrap();
-        assert!(partition_size(&path).is_err(), "an image cut short of its partition's end");
+        assert!(
+            partition_size(&path).is_err(),
+            "an image cut short of its partition's end"
+        );
         std::fs::write(&path, b"AVBf").unwrap();
-        assert!(partition_size(&path).is_err(), "too short to end in a footer");
+        assert!(
+            partition_size(&path).is_err(),
+            "too short to end in a footer"
+        );
     }
 
     #[test]

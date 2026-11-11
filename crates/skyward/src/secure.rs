@@ -374,9 +374,20 @@ fn say_framework(dir: &Path) -> Result<usize> {
 /// reads as the interface and then the instance: the description names the
 /// two separately.
 fn describes(text: &str, name: &str) -> bool {
-    let Some((interface, instance)) = name.rsplit_once('/') else { return false };
-    let Some((package, interface)) = interface.rsplit_once('.') else { return false };
-    text.contains(package) && text.contains(&format!("{interface}/{instance}"))
+    let Some((path, instance)) = name.rsplit_once('/') else { return false };
+    let (package, interface) = match path.split_once("::") {
+        // The older kind of name carries its version, as in
+        // package@1.4::Interface, and its description names the interface
+        // and the instance in an element of their own.
+        Some((hal, interface)) => (hal.split_once('@').map_or(hal, |(package, _)| package), interface),
+        None => match path.rsplit_once('.') {
+            Some((package, interface)) => (package, interface),
+            None => return false,
+        },
+    };
+    text.contains(package)
+        && (text.contains(&format!("{interface}/{instance}"))
+            || (text.contains(&format!("<name>{interface}</name>")) && text.contains(&format!("<instance>{instance}</instance>"))))
 }
 
 /// Wait until the service directory is a new process and takes calls

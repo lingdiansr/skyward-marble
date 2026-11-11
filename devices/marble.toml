@@ -111,10 +111,15 @@ user = "system"
 groups = ["system"]
 
 # The boot control, which says which slot the bootloader starts next and
-# switches it. It comes last: the phone is usable without it.
+# switches it. It comes last: the phone is usable without it. Its
+# libraries come from the build its vendor partition was made against,
+# before the installed system's: its library calls
+# android::base::Basename with the vendor interface's signature, which a
+# newer system's libbase no longer has, and then the service never
+# registers.
 [[service]]
 path = "/vendor/bin/hw/android.hardware.boot@1.2-service"
-libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
+libraries = ["/vendor/lib64", "/apex/com.android.vndk.v32/lib64", "/system/lib64", "/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64"]
 ready_hardware_service = "android.hardware.boot@1.2::IBootControl/default"
 user = "root"
 groups = ["root"]
@@ -135,7 +140,12 @@ firmware = [
 ]
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
-libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/system/lib64", "/apex/com.android.vndk.v32/lib64", "/vendor/lib64"]
+# The recovery's own linker and libc are Android 12L, the build the vendor
+# partition was made for; the supplicant must run on those. The stock
+# recovery does not carry libbinder_ndk, so the platform libraries it needs
+# come from the 15.0 system image, kept under a folder of their own so they
+# are only the supplicant's: the recovery itself stays on 12L.
+libraries = ["/system/lib64/a15", "/system/lib64", "/vendor/lib64"]
 service = "android.hardware.wifi.supplicant@1.4::ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"
 
