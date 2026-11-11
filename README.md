@@ -12,6 +12,77 @@ Skyward is a recovery written in Rust, from scratch.
   <img src="assets/time-zone.png" width="30%" alt="Time zone">
 </p>
 
+## This branch: Redmi Note 12 Turbo (marble)
+
+This repository is a fork of [kirklin/skyward](https://github.com/kirklin/skyward)
+whose default branch, `marble`, adds the Redmi Note 12 Turbo (Snapdragon 7+ Gen 2
+Mobile Platform), built on the Chinese OS3.0.5.0.VMRCNXM package (Android 15).
+Upstream's `main` is kept as `main` here. The fork publishes no releases: the
+image is built as [Building](#building) shows and flashed to the recovery
+partition.
+
+The phone's stock recovery is barer than the ones upstream builds on: no
+servicemanager and no binder filesystem, a 12L user space beside a newer
+installed system, and none of the platform libraries the vendor's WLAN
+supplicant needs. The branch therefore changes both the device configuration
+and, where the stock recovery leaves nothing to configure, the recovery itself.
+
+**Touch.** The panel is Goodix's 9916r on SPI, driven by `gtx8_spi` in
+`goodix_core.ko`; the other panel drivers the phone's own `modules.load` names
+belong to the suppliers another unit of this model may carry and bring up nothing
+here. The recovery's init loads `goodix_core` before `xiaomi_touch`, the core it
+registers with, so Skyward unloads and reloads it after that. The owner list
+holds only the nodes this panel makes: `hand_over` used to stop on one the panel
+never creates, which ended `bring_up` before the services and the WLAN started.
+
+**Data decryption.** The stock recovery carries no servicemanager and mounts no
+binder filesystem, so nothing answers a key request and data stays locked. Its
+ramdisk now mounts binderfs at early-init, and when the recovery has no service
+directory of its own Skyward starts the installed system's, speaks its AIDL wire
+format (`SYST` in place of the recovery's `RECO`) and its method numbers, and
+lets those services link against the installed system's libraries. The credential
+service is HIDL on this phone and runs through the installed system's
+`hwservicemanager`, which Skyward exposes at its standard path
+`/system/bin/hwservicemanager`; `qseecomd`, the daemon the secure world calls
+back through, is kept off the installed system's libraries, whose `libxml2` needs
+the i18n apex's `libandroidicu.so`.
+
+**Boot control.** The service calls
+`android::base::Basename(std::string const&)`, which the installed system's
+`libbase` no longer exports, so it exits as it starts and the boot slot page
+reports it missing. Its libraries come from the vendor build first and the
+installed system's last, and it registers.
+
+**WLAN.** The chip is `qca6490` over PCIe, driven by `qca_cld3_qca6490` over
+`cnss2`; its firmware and the MAC address come from the modem and persist
+partitions. The device configuration mounts persist read-write already, so
+Skyward reuses that mount for the firmware instead of mounting the partition
+read-only again, which the kernel refuses on a busy device. The vendor supplicant
+is an Android 12L build and runs on the recovery's own 12L linker and libc; the
+15.0 platform libraries the stock recovery does not carry are kept under
+`/system/lib64/a15` and added to the ramdisk with
+`--extra devices/marble-extra`, whose README records where each comes from.
+Skyward describes the supplicant's HIDL manifest by its name and instance
+elements, so the hardware service directory finds it.
+
+**MTP.** Events answer no command; they are sent with transaction 0, so a host
+no longer ignores one that names the last command's transaction, and storage
+added while a session is open appears without re-binding.
+
+**Command line.** init starts the recovery service by path with no arguments,
+but the same binary carries the command line. Installed as recovery, it runs the
+service only when it has no arguments, so `skyward recovery slot`, `bcb` and
+`info` still parse.
+
+### Limits
+
+- Dual boot: the phone has no `init_boot` partition, the official Android 15
+  package either, so upstream's design — the kernel in `boot`, the second
+  system's first program in `init_boot` — has no place here. The entry stays
+  hidden, and no variant writes the program into `boot`'s ramdisk.
+- The image is built on the stock Android 15 package; the installed system the
+  phone runs is a ported HyperOS build.
+
 ## Features
 
 ### Dual boot
@@ -119,11 +190,11 @@ the data partition.
 | 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM (Android 16) |
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
-| 🚧 Redmi Note 12 Turbo | `marble` | OS3.0.5.0.VMRCNXM (Android 15) |
 
 ## Installing Skyward
 
-Skyward needs an unlocked bootloader. Download the zip for your phone from
+Skyward needs an unlocked bootloader. This fork publishes no releases, so build
+the image as [Building](#building) shows. Upstream's zips are on its
 [Releases](https://github.com/kirklin/skyward/releases), where each shows as the
 phone's model and codename, such as Xiaomi 17 Ultra (nezha). Check it against
 `SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
@@ -234,6 +305,33 @@ target/release/skyward-pack recovery \
   --mono resources/fonts/KirkMono-Regular.ttf \
   --mono-license resources/fonts/KirkMono-OFL.txt \
   --out target/skyward-nezha.img
+```
+
+### This branch's image (marble)
+
+The WLAN's platform libraries are not in the stock recovery, so packing the
+marble image adds `devices/marble-extra` to the ramdisk; the rest is the steps
+above.
+
+```sh
+target/release/skyward-pack stock --config devices/marble.toml --out target/stock/marble/recovery.img
+target/release/skyward-pack recovery \
+  --stock target/stock/marble/recovery.img \
+  --binary target/aarch64-linux-android/release/skyward \
+  --system-init target/system-init/aarch64-linux-android/release/system-init \
+  --config devices/marble.toml \
+  --font resources/fonts/MiSansVF.ttf \
+  --mono resources/fonts/KirkMono-Regular.ttf \
+  --mono-license resources/fonts/KirkMono-OFL.txt \
+  --extra devices/marble-extra \
+  --out target/skyward-marble.img
+```
+
+Flash it to the recovery partition of the slot the phone starts from:
+
+```sh
+fastboot flash recovery_a target/skyward-marble.img
+fastboot reboot recovery
 ```
 
 Tests and lints run on the computer; what runs only on the phone is linted for it:

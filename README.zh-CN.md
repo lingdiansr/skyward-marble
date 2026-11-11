@@ -12,6 +12,62 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
   <img src="assets/time-zone.png" width="30%" alt="时区">
 </p>
 
+## 本分支：Redmi Note 12 Turbo（`marble`）
+
+本仓库是 [kirklin/skyward](https://github.com/kirklin/skyward) 的分支，默认分支
+`marble` 加入 Redmi Note 12 Turbo（第二代骁龙 7+ 移动平台）的支持，按照国行
+OS3.0.5.0.VMRCNXM 完整包（Android 15）构建。上游的 `main` 在这里仍为 `main`。
+本分支不发布 Releases：镜像按[构建](#构建)中的步骤构建，再刷入 recovery 分区。
+
+这台手机的原厂 recovery 比上游构建所基于的 recovery 少了很多东西：没有
+servicemanager，也不挂载 binder 文件系统；自身用户空间是 Android 12L，已安装的
+系统更新；原厂 supplicant 需要的平台库也一个都没有。本分支因此既改动了设备配置，
+也在原厂 recovery 没有可配置之处时改动了 recovery 本身。
+
+**触摸。** 面板是 Goodix 9916r，走 SPI，由 `goodix_core.ko` 里的 `gtx8_spi`
+驱动；手机自己的 `modules.load` 里列的其余面板驱动属于同型号其他供应商的机器，
+在这里不能启动任何设备。recovery 的 init 在 `goodix_core` 注册所依赖的
+`xiaomi_touch` 之前就加载了它，所以 Skyward 先把它卸载，再在 `xiaomi_touch`
+之后重新加载。owner 列表只保留这块面板真正会创建的节点：`hand_over` 以前会在
+面板不会创建的节点上失败，导致 `bring_up` 在服务和 WLAN 启动之前就结束。
+
+**解密 data。** 原厂 recovery 没有 servicemanager，也不挂载 binder 文件系统，
+因此没有程序回应密钥请求，data 一直处于锁定状态。现在 ramdisk 在 early-init
+挂载 binderfs；recovery 没有自己的服务目录时，Skyward 启动已安装系统的目录，
+使用它的 AIDL 线格式（`SYST`，而不是 recovery 的 `RECO`）和方法号，这些服务
+也链接已安装系统的库。这台手机的凭据服务是 HIDL 的，通过已安装系统的
+`hwservicemanager` 运行；Skyward 把它放到标准路径
+`/system/bin/hwservicemanager`。安全世界回调用的 `qseecomd` 不使用已安装系统的
+库，因为它的 `libxml2` 需要 i18n apex 里的 `libandroidicu.so`。
+
+**启动槽位。** 启动槽位服务调用
+`android::base::Basename(std::string const&)`，已安装系统的 `libbase` 不再导出
+这个签名，服务一启动就退出，槽位页因此报它没有运行。它的库改为先从 vendor 的
+构建取、已安装系统的库放在最后，服务就能注册。
+
+**WLAN。** 芯片是 PCIe 上的 `qca6490`，由 `cnss2` 上的 `qca_cld3_qca6490`
+驱动；固件和 MAC 地址来自 modem 和 persist 分区。设备配置已经把 persist 以可写
+方式挂载，Skyward 直接复用这个挂载点取固件，不再对忙着的设备做只读挂载。原厂
+supplicant 是 Android 12L 构建，运行在 recovery 自己的 12L 链接器和 libc 上；
+原厂 recovery 没有的 15.0 平台库放在 `/system/lib64/a15`，由
+`--extra devices/marble-extra` 加进 ramdisk，来源记录在
+`devices/marble-extra.README.md`。supplicant 的 HIDL manifest 按名称和实例两个
+元素描述，硬件服务目录因此能找到它。
+
+**MTP。** MTP 事件不需要回应命令；现在都以事务号 0 发送，主机不会再忽略指向
+上一个命令事务的事件，会话打开期间新增的存储也会直接出现，不用重新绑定。
+
+**命令行。** init 按路径启动 recovery 服务时不带参数，但同一个程序也带着命令行。
+安装为 recovery 之后，只有不带参数时才运行服务，所以 `skyward recovery slot`、
+`bcb`、`info` 等命令仍然可以解析。
+
+### 限制
+
+- 双系统：这台手机没有 `init_boot` 分区，官方 Android 15 包里也没有，上游的设计
+  ——内核写在 `boot`、第二系统的第一个程序写在 `init_boot`——在这里没有落点。
+  入口保持隐藏，也没有把程序写进 `boot` 的 ramdisk 的变体。
+- 镜像按照原厂 Android 15 完整包构建；真机上的已安装系统是移植的 HyperOS。
+
 ## 功能
 
 ### 双系统
@@ -113,11 +169,10 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 | 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM（Android 16） |
 | 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM（Android 17） |
 | 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM（Android 17） |
-| 🚧 Redmi Note 12 Turbo | `marble` | OS3.0.5.0.VMRCNXM（Android 15） |
 
 ## 安装 Skyward
 
-Skyward 需要已解锁的 bootloader。从 [Releases](https://github.com/kirklin/skyward/releases) 下载对应机型的 zip，每个文件都标有机型和代号，例如 Xiaomi 17 Ultra (nezha)。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
+Skyward 需要已解锁的 bootloader。本分支不发布 Releases，镜像按[构建](#构建)中的步骤构建。上游的 zip 在它的 [Releases](https://github.com/kirklin/skyward/releases) 中，每个文件都标有机型和代号，例如 Xiaomi 17 Ultra (nezha)。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
 
 ```sh
 unzip skyward-v0.2.0-nezha-OS4.0.4.0.XPACNXM.zip
@@ -181,6 +236,32 @@ target/release/skyward-pack recovery \
   --mono resources/fonts/KirkMono-Regular.ttf \
   --mono-license resources/fonts/KirkMono-OFL.txt \
   --out target/skyward-nezha.img
+```
+
+### 本分支的镜像（`marble`）
+
+原厂 recovery 没有 WLAN 需要的平台库，所以打包 marble 的镜像时用
+`devices/marble-extra` 把它们加进 ramdisk，其余步骤与上面相同。
+
+```sh
+target/release/skyward-pack stock --config devices/marble.toml --out target/stock/marble/recovery.img
+target/release/skyward-pack recovery \
+  --stock target/stock/marble/recovery.img \
+  --binary target/aarch64-linux-android/release/skyward \
+  --system-init target/system-init/aarch64-linux-android/release/system-init \
+  --config devices/marble.toml \
+  --font resources/fonts/MiSansVF.ttf \
+  --mono resources/fonts/KirkMono-Regular.ttf \
+  --mono-license resources/fonts/KirkMono-OFL.txt \
+  --extra devices/marble-extra \
+  --out target/skyward-marble.img
+```
+
+刷入手机启动槽位的 recovery 分区：
+
+```sh
+fastboot flash recovery_a target/skyward-marble.img
+fastboot reboot recovery
 ```
 
 测试和代码检查在电脑上运行；只在手机上运行的代码按照手机目标检查：
