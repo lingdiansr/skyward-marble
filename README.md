@@ -17,9 +17,11 @@ Skyward is a recovery written in Rust, from scratch.
 This repository is a fork of [kirklin/skyward](https://github.com/kirklin/skyward)
 whose default branch, `marble`, adds the Redmi Note 12 Turbo (Snapdragon 7+ Gen 2
 Mobile Platform), built on the Chinese OS3.0.5.0.VMRCNXM package (Android 15).
-Upstream's `main` is kept as `main` here. The fork publishes no releases: the
-image is built as [Building](#building) shows and flashed to the recovery
-partition.
+Upstream's `main` is kept as `main` here. The fork's releases are on
+[Releases](https://github.com/lingdiansr/skyward-marble/releases), tagged
+after upstream's version with a pre-release suffix such as `v0.2.0-rc.1`; the
+image's own update check asks this fork's releases. The image is also built as
+[Building](#building) shows and flashed to the recovery partition.
 
 The phone's stock recovery is barer than the ones upstream builds on: no
 servicemanager and no binder filesystem, a 12L user space beside a newer
@@ -92,6 +94,12 @@ The rest — the Goodix panel and its owner list, the WLAN runtime, the MTP even
 and the command line — was worked out on this branch and phone. The VINTF
 manifest matching was written here as well, and also covers what open upstream
 PR #27 proposes, HIDL names included.
+
+### Releases
+
+A release is tagged `v<upstream version>-rc.<n>`, and the workspace `Cargo.toml`
+version names the same string, so the binary and its update check agree. The
+workflow builds only this phone for a tag and marks the release a pre-release.
 
 ### Limits
 
@@ -212,22 +220,23 @@ the data partition.
 
 ## Installing Skyward
 
-Skyward needs an unlocked bootloader. This fork publishes no releases, so build
-the image as [Building](#building) shows. Upstream's zips are on its
-[Releases](https://github.com/kirklin/skyward/releases), where each shows as the
-phone's model and codename, such as Xiaomi 17 Ultra (nezha). Check it against
+Skyward needs an unlocked bootloader. Download the zip for this phone from the
+fork's [Releases](https://github.com/lingdiansr/skyward-marble/releases), or
+build the image as [Building](#building) shows. Each zip is named for the phone's
+model and codename, such as Redmi Note 12 Turbo (marble), and its version follows
+upstream's with a pre-release suffix, such as `v0.2.0-rc.1`. Check it against
 `SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
 the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.2.0-nezha-OS4.0.4.0.XPACNXM.zip
-fastboot flash recovery skyward-v0.2.0-nezha-OS4.0.4.0.XPACNXM.img
+unzip skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.zip
+fastboot flash recovery skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.img
 fastboot reboot recovery
 ```
 
-Afterwards Skyward updates itself over Wi-Fi from its newest release, on the
-Skyward update page in Settings; a newer image, unzipped, also installs from its own
-Install page. With **Flash Skyward again** on, a system update or zip that writes
+Afterwards Skyward updates itself over Wi-Fi from this fork's newest release, on
+the Skyward update page in Settings; a newer image, unzipped, also installs from
+its own Install page. With **Flash Skyward again** on, a system update or zip that writes
 over the recovery partitions gets Skyward back in them.
 
 adb in Skyward is a root shell that needs no authorization on the phone: anyone

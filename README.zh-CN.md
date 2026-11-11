@@ -17,7 +17,10 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 本仓库是 [kirklin/skyward](https://github.com/kirklin/skyward) 的分支，默认分支
 `marble` 加入 Redmi Note 12 Turbo（第二代骁龙 7+ 移动平台）的支持，按照国行
 OS3.0.5.0.VMRCNXM 完整包（Android 15）构建。上游的 `main` 在这里仍为 `main`。
-本分支不发布 Releases：镜像按[构建](#构建)中的步骤构建，再刷入 recovery 分区。
+本分支的发布在 [Releases](https://github.com/lingdiansr/skyward-marble/releases)，
+标签在上游版本后加 `-rc.N` 之类的预发布后缀，例如 `v0.2.0-rc.1`；镜像自身的更新
+检查指向本 fork 的 Releases。镜像也可以按[构建](#构建)中的步骤构建，再刷入
+recovery 分区。
 
 这台手机的原厂 recovery 比上游构建所基于的 recovery 少了很多东西：没有
 servicemanager，也不挂载 binder 文件系统；自身用户空间是 Android 12L，已安装的
@@ -78,6 +81,12 @@ supplicant 是 Android 12L 构建，运行在 recovery 自己的 12L 链接器�
 其余部分——Goodix 面板及其 owner 列表、WLAN 的运行时、MTP 事件和 recovery
 命令行——是本分支在真机和代码上做的。VINTF manifest 匹配同样是本分支写的，
 覆盖了仍未合并的上游 PR #27 提出的内容，并支持 HIDL 名。
+
+### 发布
+
+发布标签是 `v<上游版本>-rc.<n>`，工作区 `Cargo.toml` 的版本写成同一个字符串，
+所以二进制内的版本与更新检查一致。打标签时构建流程只构建这台手机，并把该
+Release 标为预发布。
 
 ### 限制
 
@@ -190,15 +199,15 @@ supplicant 是 Android 12L 构建，运行在 recovery 自己的 12L 链接器�
 
 ## 安装 Skyward
 
-Skyward 需要已解锁的 bootloader。本分支不发布 Releases，镜像按[构建](#构建)中的步骤构建。上游的 zip 在它的 [Releases](https://github.com/kirklin/skyward/releases) 中，每个文件都标有机型和代号，例如 Xiaomi 17 Ultra (nezha)。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
+Skyward 需要已解锁的 bootloader。从本 fork 的 [Releases](https://github.com/lingdiansr/skyward-marble/releases) 下载对应机型的 zip，或者按[构建](#构建)中的步骤构建镜像。每个 zip 都标有机型和代号，例如 Redmi Note 12 Turbo (marble)，版本在上游版本后加预发布后缀，例如 `v0.2.0-rc.1`。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
 
 ```sh
-unzip skyward-v0.2.0-nezha-OS4.0.4.0.XPACNXM.zip
-fastboot flash recovery skyward-v0.2.0-nezha-OS4.0.4.0.XPACNXM.img
+unzip skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.zip
+fastboot flash recovery skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.img
 fastboot reboot recovery
 ```
 
-之后连接 WLAN，就可以在“设置”的“Skyward 更新”页面更新到最新版本，也可以在 Skyward 自己的“安装”页面安装解压出来的新版镜像。打开 **自动重新刷入 Skyward** 之后，系统更新或者刷机包覆盖 recovery 分区的时候，Skyward 会重新刷回这些分区。
+之后连接 WLAN，就可以在“设置”的“Skyward 更新”页面更新到本 fork 的最新版本，也可以在 Skyward 自己的“安装”页面安装解压出来的新版镜像。打开 **自动重新刷入 Skyward** 之后，系统更新或者刷机包覆盖 recovery 分区的时候，Skyward 会重新刷回这些分区。
 
 Skyward 中的 adb 是 root shell，手机上无需授权：手机处于 recovery 的时候，任何人拿到手机和数据线都能访问其中的存储。
 

@@ -78,7 +78,9 @@ jobs:
         env:
           DEVICE: ${{ inputs.device }}
         run: |
-          if [ -n "$DEVICE" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo 'devices=["marble"]' >> "$GITHUB_OUTPUT"
+          elif [ -n "$DEVICE" ]; then
             test -f "devices/$DEVICE.toml"
             echo "devices=$(jq -nc --arg device "$DEVICE" '[$device]')" >> "$GITHUB_OUTPUT"
           else
@@ -173,18 +175,27 @@ jobs:
         working-directory: images
         run: sha256sum -- *.zip > SHA256SUMS
       # Each zip shows on the release as the phone it is for, its model and
-      # then its codename, which is how people look for theirs; a device
-      # whose zip is missing stops the release.
+      # then its codename, which is how people look for theirs. A tag builds
+      # only this fork's phone, so the release carries the zips that are
+      # there; a version that names a pre-release is published as one.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          shopt -s nullglob
           zips=()
           for config in devices/*.toml; do
             device=$(basename "$config" .toml)
+            matches=(images/skyward-"$GITHUB_REF_NAME"-"$device"-*.zip)
+            [ ${#matches[@]} -gt 0 ] || continue
+            zip=${matches[0]}
             model=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["device"]["model"])' "$config")
-            zip=$(ls images/skyward-"$GITHUB_REF_NAME"-"$device"-*.zip)
             zips+=("$zip#$model ($device)")
           done
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "${zips[@]}" images/SHA256SUMS
+          [ ${#zips[@]} -gt 0 ] || { echo "no images to publish"; exit 1; }
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-rc.*|*-alpha.*|*-beta.*) flags+=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" --title "$GITHUB_REF_NAME" --generate-notes "${zips[@]}" images/SHA256SUMS
