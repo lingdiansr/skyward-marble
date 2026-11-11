@@ -74,6 +74,25 @@ but the same binary carries the command line. Installed as recovery, it runs the
 service only when it has no arguments, so `skyward recovery slot`, `bcb` and
 `info` still parse.
 
+### Provenance
+
+The port began from upstream's `devices/nuwa.toml`, with
+[pubglite55/skyward-for-nuwa](https://github.com/pubglite55/skyward-for-nuwa)
+as the reference for a one-device fork. These parts come from other work:
+
+| Measure | Where it came from |
+| --- | --- |
+| The key service chain — `qseecomd`, KeyMint, the HIDL credential service and `hwservicemanager` — with its users and groups | Upstream [`devices/ishtar.toml`](https://github.com/kirklin/skyward/blob/main/devices/ishtar.toml) (Xiaomi 13 Ultra), adapted here: the library paths, and no wait on `vendor.sys.listeners.registered` |
+| The backup's `efs` and skipped data, the interfaces KeyMint registers, and the log folders a wipe clears | Upstream [`devices/nezha.toml`](https://github.com/kirklin/skyward/blob/main/devices/nezha.toml) (Xiaomi 17 Ultra); these lists are the same |
+| The binderfs mount at early-init, the installed system's AIDL servicemanager, the `SYST` parcel header and method numbers, and `modules.reload` putting `goodix_core` back after `xiaomi_touch` | [Upstream PR #26](https://github.com/kirklin/skyward/pull/26), Memories-white's Redmi K60 (`mondrian`) recovery, cherry-picked from `feat/mondrian-recovery` at `a84f5f67`; the PR is still open |
+| The boot control's library order | Reached here from the missing `Basename` symbol, then checked against PR #26's phone — the same ported system and stock Android 15 recovery, where `IBootControl` registers |
+| The WLAN MAC address read from the persist mount that is already there | [CLF184/skyward `47c6eb6f`](https://github.com/CLF184/skyward/commit/47c6eb6ff6ff9c019293b6a8af898b64e8d1faec) (`piano`, Xiaomi Pad 8 Pro) and [mengguizzz/skyward](https://github.com/mengguizzz/skyward)'s `pipa` branch, which fixed it the same way; upstream PRs [#1](https://github.com/kirklin/skyward/pull/1) and [#15](https://github.com/kirklin/skyward/pull/15) proposed it and were closed unmerged |
+
+The rest — the Goodix panel and its owner list, the WLAN runtime, the MTP event
+and the command line — was worked out on this branch and phone. The VINTF
+manifest matching was written here as well, and also covers what open upstream
+PR #27 proposes, HIDL names included.
+
 ### Limits
 
 - Dual boot: the phone has no `init_boot` partition, the official Android 15
