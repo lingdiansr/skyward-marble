@@ -73,7 +73,7 @@ supplicant 是 Android 12L 构建，运行在 recovery 自己的 12L 链接器�
 | 备份的 `efs` 和要跳过的数据、KeyMint 注册的接口，以及清除数据时清掉的日志目录 | 上游 [`devices/nezha.toml`](https://github.com/kirklin/skyward/blob/main/devices/nezha.toml)（小米 17 Ultra）；这些列表与本机一致 |
 | early-init 挂载 binderfs、启动已安装系统的 AIDL servicemanager、`SYST` parcel 头与方法号、把 `goodix_core` 放到 `xiaomi_touch` 之后重载的 `modules.reload` | [上游 PR #26](https://github.com/kirklin/skyward/pull/26)，Memories-white 的 Redmi K60（`mondrian`）适配，cherry-pick 自 `feat/mondrian-recovery` 的 `a84f5f67`；该 PR 仍未合并 |
 | 启动槽位服务的库顺序 | 由本机缺失的 `Basename` 符号定位，再按 PR #26 的同环境配置核对（同一移植系统 + 原厂 A15 recovery，`IBootControl` 能注册） |
-| 从已挂载的 persist 读 WLAN MAC 地址 | [CLF184/skyward `47c6eb6f`](https://github.com/CLF184/skyward/commit/47c6eb6ff6ff9c019293b6a8af898b64e8d1faec)（`piano`，小米平板 8 Pro）与 [mengguizzz/skyward](https://github.com/mengguizzz/skyward) 的 `pipa` 分支，做法相同；上游 PR [#1](https://github.com/kirklin/skyward/pull/1)、[#15](https://github.com/kirklin/skyward/pull/15) 提过同样的改动，均已关闭未合并 |
+| 从已挂载的 persist 读 WLAN MAC 地址 | [CLF184/skyward `47c6eb6f`](https://github.com/CLF184/skyward/commit/47c6eb6ff6ff9c019293b6a8af898b64e8d1faec)（`piano`，小米平板 8 Pro）与 [mengguizzz/skyward](https://github.com/mengguizzz/skyward) 的 `pipa` 分支，做法相同；两处都只在 fork 里 |
 
 其余部分——Goodix 面板及其 owner 列表、WLAN 的运行时、MTP 事件和 recovery
 命令行——是本分支在真机和代码上做的。VINTF manifest 匹配同样是本分支写的，
