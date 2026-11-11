@@ -4,10 +4,14 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 
+/// The accelerator this fork's update check goes through: a GitHub release
+/// link with this in front is streamed from its edge.
+pub const PROXY: &str = "https://v4.gh-proxy.org/";
+
 /// Where GitHub answers which releases of Skyward there are, including the
-/// pre-releases this fork publishes.
+/// pre-releases this fork publishes, through the accelerator.
 pub const RELEASES: &str =
-    "https://api.github.com/repos/lingdiansr/skyward-marble/releases?per_page=100";
+    "https://v4.gh-proxy.org/https://api.github.com/repos/lingdiansr/skyward-marble/releases?per_page=100";
 
 /// The version of GitHub's API the answer is read as.
 const API_VERSION: &str = "2022-11-28";
@@ -40,11 +44,14 @@ pub struct Build {
 }
 
 impl Build {
-    /// Where to download the zip from, in the order to try: the file's own
-    /// short-lived address, where GitHub's API gave one, then the release's
-    /// link on github.com, which some networks do not reach.
+    /// Where to download the zip from, in the order to try: the release's
+    /// link through the accelerator, then the file's short-lived address
+    /// where GitHub's API gave one, then the link on github.com directly.
     pub fn sources(&self, located: Option<String>) -> Vec<String> {
-        located.into_iter().chain([self.link.clone()]).collect()
+        std::iter::once(format!("{PROXY}{}", self.link))
+            .chain(located)
+            .chain([self.link.clone()])
+            .collect()
     }
 }
 
@@ -259,21 +266,26 @@ mod tests {
     }
 
     #[test]
-    fn a_zip_is_downloaded_from_where_github_sends_it_then_from_its_link() {
+    fn a_zip_is_downloaded_from_the_accelerator_then_directly() {
         let build = newest(ANSWERED_013, "ishtar", "0.1.2")
             .unwrap()
             .build
             .unwrap();
         let link = "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip";
+        let accelerated = format!("{PROXY}{link}");
         assert_eq!(
             build.sources(Some(
                 "https://release-assets.githubusercontent.com/a?sig=1".into()
             )),
-            ["https://release-assets.githubusercontent.com/a?sig=1", link]
+            [
+                accelerated.clone(),
+                "https://release-assets.githubusercontent.com/a?sig=1".into(),
+                link.into()
+            ]
         );
         assert_eq!(
             build.sources(None),
-            [link],
+            [accelerated, link.into()],
             "where GitHub's API gave no address"
         );
     }

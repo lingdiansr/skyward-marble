@@ -19,7 +19,7 @@ whose default branch, `marble`, adds the Redmi Note 12 Turbo (Snapdragon 7+ Gen 
 Mobile Platform), built on the Chinese OS3.0.5.0.VMRCNXM package (Android 15).
 Upstream's `main` is kept as `main` here. The fork's releases are on
 [Releases](https://github.com/lingdiansr/skyward-marble/releases), tagged
-after upstream's version with a pre-release suffix such as `v0.2.0-rc.1`; the
+after upstream's version with a pre-release suffix such as `v0.2.0-rc.2`; the
 image's own update check asks this fork's releases. The image is also built as
 [Building](#building) shows and flashed to the recovery partition.
 
@@ -224,13 +224,13 @@ Skyward needs an unlocked bootloader. Download the zip for this phone from the
 fork's [Releases](https://github.com/lingdiansr/skyward-marble/releases), or
 build the image as [Building](#building) shows. Each zip is named for the phone's
 model and codename, such as Redmi Note 12 Turbo (marble), and its version follows
-upstream's with a pre-release suffix, such as `v0.2.0-rc.1`. Check it against
+upstream's with a pre-release suffix, such as `v0.2.0-rc.2`. Check it against
 `SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
 the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.zip
-fastboot flash recovery skyward-v0.2.0-rc.1-marble-OS3.0.5.0.VMRCNXM.img
+unzip skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.zip
+fastboot flash recovery skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.img
 fastboot reboot recovery
 ```
 
