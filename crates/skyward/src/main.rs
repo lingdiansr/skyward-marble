@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use skyward_config::{ramdisk, DeviceConfig};
+use skyward_config::{ramdisk, DeviceConfig, Service};
 use skyward_sys::{bcb, Power};
 use skyward_vab::SnapshotState;
 use std::path::{Path, PathBuf};
@@ -623,12 +623,15 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
             skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
         }
     }
-    let services: Vec<_> = cfg
+    let mut services: Vec<_> = cfg
         .services
         .iter()
         .filter(|s| s.runs_on(&props))
         .cloned()
         .collect();
+    for service in &mut services {
+        locate(service);
+    }
     // The drivers ask for their firmware by name, and the kernel looks only
     // in folders of its own unless told to pass on what it does not find
     // there to ueventd, which looks in the recovery's firmware folders.
@@ -690,6 +693,33 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
     }
     services::start(&services, libraries.as_deref())?;
     agree_on_the_notes_key(&registering)
+}
+
+/// Where the installed system keeps the programs of its platform. Which of
+/// its partitions holds a program differs between builds: the hardware
+/// service directory is in system_ext on some and in system on others.
+const INSTALLED_PROGRAMS: [&str; 3] = ["/mnt/system/system/bin", "/mnt/system_ext/bin", "/mnt/system/bin"];
+
+/// Put a service's program where the installed system keeps it. The path a
+/// configuration names is the one the device's build had when the
+/// configuration was written; a build that divides its platform's programs
+/// between partitions differently keeps the same program under another of
+/// them, so a path that is not there is looked for by its name.
+#[cfg(target_os = "android")]
+fn locate(service: &mut Service) {
+    if !service.path.starts_with("/mnt/") || Path::new(&service.path).is_file() {
+        return;
+    }
+    let Some(name) = Path::new(&service.path).file_name() else {
+        return;
+    };
+    for dir in INSTALLED_PROGRAMS {
+        let at = Path::new(dir).join(name);
+        if at.is_file() {
+            service.path = at.to_string_lossy().into_owned();
+            return;
+        }
+    }
 }
 
 /// Give each file the phone's own init hands over as it boots to the
