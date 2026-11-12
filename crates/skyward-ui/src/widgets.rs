@@ -2418,6 +2418,9 @@ pub fn output_edges(c: &Canvas, t: &Theme, f: &Fonts, top: f32, lines: &[String]
 /// [`output_edges`] lays out. The card runs on past each end of the row
 /// that it goes on from, so only its first and last rows round it.
 pub fn output_row(c: &mut Canvas, t: &Theme, f: &Fonts, lines: &[String], i: usize) {
+    if i >= lines.len() {
+        return;
+    }
     let m = &t.m;
     let pitch = m.dp(OUTPUT_PITCH_DP);
     let (base, above, _) = output_layout(t, f);
