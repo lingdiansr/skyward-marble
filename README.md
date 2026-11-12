@@ -19,7 +19,7 @@ whose default branch, `marble`, adds the Redmi Note 12 Turbo (Snapdragon 7+ Gen 
 Mobile Platform), built on the Chinese OS3.0.5.0.VMRCNXM package (Android 15).
 Upstream's `main` is kept as `main` here. The fork's releases are on
 [Releases](https://github.com/lingdiansr/skyward-marble/releases), tagged
-after upstream's version with a pre-release suffix such as `v0.2.0-rc.2`; the
+after upstream's version with a pre-release suffix such as `v0.2.0-rc.3`; the
 image's own update check asks this fork's releases. The image is also built as
 [Building](#building) shows and flashed to the recovery partition.
 
@@ -134,6 +134,12 @@ zstd use to flash it, and an `unzip` whose `-p` streams the image as it reads it
 They also get `avbctl` and `resetprop`, to turn off verified boot's checks and to
 read and set properties.
 
+An unlocked bootloader puts one more choice on the Settings page: **Allow
+installing an older system**. With it on, a full OTA older than the installed
+system installs too, and the data partition is erased once the update is applied;
+Skyward refuses an older package while the bootloader is locked. It is off until
+it is turned on.
+
 ### Online updates
 
 ![Update the system and Skyward online](slides/en/out/05-updates.png)
@@ -224,13 +230,13 @@ Skyward needs an unlocked bootloader. Download the zip for this phone from the
 fork's [Releases](https://github.com/lingdiansr/skyward-marble/releases), or
 build the image as [Building](#building) shows. Each zip is named for the phone's
 model and codename, such as Redmi Note 12 Turbo (marble), and its version follows
-upstream's with a pre-release suffix, such as `v0.2.0-rc.2`. Check it against
+upstream's with a pre-release suffix, such as `v0.2.0-rc.3`. Check it against
 `SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
 the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.zip
-fastboot flash recovery skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.img
+unzip skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.zip
+fastboot flash recovery skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.img
 fastboot reboot recovery
 ```
 

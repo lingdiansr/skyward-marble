@@ -68,6 +68,11 @@ pub struct Options {
     /// A zip with an install script runs only if it was signed with one of
     /// the keys the phone's updates are signed with.
     pub signed: bool,
+    /// A full update package older than the installed system installs too,
+    /// erasing the data partition with it: only an unlocked bootloader
+    /// starts the system it brings, and the new system cannot read what the
+    /// older one left in data.
+    pub downgrade: bool,
 }
 
 /// What the installer tells the screen, in the order it happens.

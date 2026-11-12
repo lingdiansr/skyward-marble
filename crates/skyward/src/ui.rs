@@ -974,12 +974,33 @@ fn detach(services: Vec<Service>) -> Detach {
     })
 }
 
-/// What an install does besides installing, as the install page's switches
-/// are set: puts Skyward back into the recovery partitions it writes over,
-/// on a phone that has them, and checks a zip's signature before its
-/// install script runs.
+/// What an install does besides installing, as the install and settings
+/// pages' switches are set: puts Skyward back into the recovery partitions
+/// it writes over, on a phone that has them; checks a zip's signature
+/// before its install script runs; and lets a package older than the
+/// installed system install, on an unlocked bootloader, erasing the data
+/// partition with it.
 fn install_options(app: &App) -> Options {
-    Options { keep: app.state.keep_recovery && app.state.recovery_partitions, signed: app.state.check_signature }
+    Options {
+        keep: app.state.keep_recovery && app.state.recovery_partitions,
+        signed: app.state.check_signature,
+        // Only an unlocked bootloader starts the older system, and a locked
+        // one must not be asked to.
+        downgrade: app.state.allow_downgrade && unlocked(),
+    }
+}
+
+/// Whether the bootloader starts what is not signed: an older system
+/// installs only where it does.
+fn unlocked() -> bool {
+    let param = |name: &str| skyward_block::boot_param(name).ok().flatten();
+    match param("androidboot.flash.locked").as_deref() {
+        Some(locked) => locked == "0",
+        None => {
+            param("androidboot.vbmeta.device_state").as_deref() == Some("unlocked")
+                || param("androidboot.verifiedbootstate").as_deref() == Some("orange")
+        }
+    }
 }
 
 /// How often the WLAN page scans while it shows.

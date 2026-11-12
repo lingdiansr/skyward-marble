@@ -64,6 +64,10 @@ pub struct Install {
     /// Skyward goes back into the recovery partitions an install writes
     /// over.
     pub keep_recovery: bool,
+    /// An update older than the installed system installs too, erasing the
+    /// data partition with it. Offered only while the bootloader is
+    /// unlocked.
+    pub allow_downgrade: bool,
 }
 
 /// What a backup takes and where it goes.
@@ -126,7 +130,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
-            install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
+            install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery, allow_downgrade: state.allow_downgrade },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
                 to: match state.backup_to {
@@ -186,6 +190,7 @@ impl Settings {
         state.file_transfer = self.file_transfer;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
+        state.allow_downgrade = self.install.allow_downgrade;
         state.backup = picked(&self.backup.parts, &PARTS);
         match self.backup.to.as_str() {
             STORAGE => state.backup_to = Place::Storage,
@@ -310,6 +315,7 @@ mod tests {
             file_transfer: false,
             check_signature: true,
             keep_recovery: false,
+            allow_downgrade: true,
             backup: [false, true, true, false],
             backup_to: Place::UsbDrive,
             compress: true,

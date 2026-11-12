@@ -556,6 +556,9 @@ pub enum Switch {
     /// Write Skyward back into the recovery partitions an install writes
     /// over.
     KeepRecovery,
+    /// Install an update older than the installed system too, erasing the
+    /// data partition with it.
+    AllowDowngrade,
     Wlan,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
@@ -1621,6 +1624,9 @@ pub struct State {
     /// Skyward goes back into the recovery partitions an install writes
     /// over.
     pub keep_recovery: bool,
+    /// An update older than the installed system installs too, erasing the
+    /// data partition with it.
+    pub allow_downgrade: bool,
     /// How Skyward went back into the recovery partitions the install
     /// wrote over, where it did.
     pub reflash: Option<Reflash>,
@@ -1778,6 +1784,7 @@ impl Default for State {
             check_signature: false,
             recovery_partitions: false,
             keep_recovery: true,
+            allow_downgrade: false,
             reflash: None,
             mounts: Ok(Vec::new()),
             mount_failure: None,
@@ -5171,6 +5178,7 @@ impl App {
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
+                    Switch::AllowDowngrade => &mut self.state.allow_downgrade,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                 };
@@ -8108,6 +8116,29 @@ mod tests {
         assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 3000), [Effect::FileTransfer(true)]);
         app.file_transfer_failed(false, "无法开启文件传输", 4000);
         assert!(!app.state.file_transfer, "the switch shows how it stands");
+    }
+
+    #[test]
+    fn the_settings_page_offers_downgrades_only_on_an_unlocked_bootloader() {
+        let (f, mut i) = (fonts(), info());
+        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let offered = |app: &mut App, i: &DeviceInfo| {
+            app.frame(&f, i).hits.iter().any(|h| h.action == Action::Toggle(Switch::AllowDowngrade))
+        };
+        assert!(!offered(&mut app, &i), "the phone does not say whether it is unlocked");
+        i.boot.unlocked = Some(false);
+        app.refresh();
+        assert!(!offered(&mut app, &i), "locked");
+        i.boot.unlocked = Some(true);
+        app.refresh();
+        assert!(offered(&mut app, &i), "offered once unlocked");
+        assert!(!app.state.allow_downgrade, "off until turned on");
+        let (_, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::AllowDowngrade));
+        if y > H as f32 * 0.9 {
+            scroll_to(&mut app, &f, y - H as f32 * 0.8, 0);
+        }
+        tap(&mut app, &f, &i, Action::Toggle(Switch::AllowDowngrade));
+        assert!(app.state.allow_downgrade);
     }
 
     /// Flick the page up from `start`: the finger travels `step` px every

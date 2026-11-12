@@ -139,8 +139,11 @@ pub struct Build {
     pub security_patch: String,
 }
 
-/// Whether `update` may go on `phone`.
-pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
+/// Whether `update` may go on `phone`: an error says why not, and `false`
+/// that it may. An older package is allowed only with `allow_downgrade`, and
+/// then `true` says the data partition has to be erased with it, as the
+/// system it brings cannot read what the newer one left.
+pub fn check(update: &Update, phone: &Phone, allow_downgrade: bool) -> Result<bool, Refusal> {
     let m = &update.metadata;
     let kind = m.get("ota-type").unwrap_or_default();
     if kind != "AB" {
@@ -158,23 +161,30 @@ pub fn check(update: &Update, phone: &Phone) -> Result<(), Refusal> {
     if m.get("pre-build").is_some() || m.get("pre-build-incremental").is_some() {
         return Err(Refusal::Incremental);
     }
-    let Some(build) = &phone.installed else { return Ok(()) };
+    let Some(build) = &phone.installed else { return Ok(false) };
     // A full package may install the version already there again; going
     // back needs a package made for the build it leaves, an incremental
-    // one.
+    // one, unless the screen allows an older one and data goes with it.
+    let mut older = false;
     let timestamp = m.get("post-timestamp").and_then(|t| t.parse().ok()).unwrap_or(0);
     if timestamp < build.timestamp {
-        return Err(Refusal::Older { package: timestamp, installed: build.timestamp });
+        if !allow_downgrade {
+            return Err(Refusal::Older { package: timestamp, installed: build.timestamp });
+        }
+        older = true;
     }
     // Patch levels are yyyy-mm-dd, so they order as text. Data that is
     // erased before the older system starts is never read under it.
     if let Some(patch) = m.get("post-security-patch-level") {
         let allowed = m.get("spl-downgrade") == Some("yes") || m.get("ota-downgrade") == Some("yes") || update.wipes();
         if patch < build.security_patch.as_str() && !allowed {
-            return Err(Refusal::OlderPatch { package: patch.to_string(), installed: build.security_patch.clone() });
+            if !allow_downgrade {
+                return Err(Refusal::OlderPatch { package: patch.to_string(), installed: build.security_patch.clone() });
+            }
+            older = true;
         }
     }
-    Ok(())
+    Ok(older)
 }
 
 /// Whether `name` is one of the `|`-separated names in `list`.
@@ -230,27 +240,27 @@ METADATA_SIZE=1024
 
     #[test]
     fn a_full_package_for_this_phone_is_accepted() {
-        assert_eq!(check(&update_with(METADATA_TEXT, PROPERTIES_TEXT), &phone()), Ok(()));
+        assert_eq!(check(&update_with(METADATA_TEXT, PROPERTIES_TEXT), &phone(), false), Ok(false));
     }
 
     #[test]
     fn the_same_build_may_be_installed_again() {
         let same = METADATA_TEXT.replace("1781000000", "1778243655");
-        assert_eq!(check(&update_with(&same, PROPERTIES_TEXT), &phone()), Ok(()));
+        assert_eq!(check(&update_with(&same, PROPERTIES_TEXT), &phone(), false), Ok(false));
     }
 
     #[test]
     fn packages_for_other_phones_are_refused() {
         let other = METADATA_TEXT.replace("pre-device=ishtar", "pre-device=nezha");
-        assert_eq!(check(&update_with(&other, PROPERTIES_TEXT), &phone()), Err(Refusal::OtherDevice("nezha".into())));
+        assert_eq!(check(&update_with(&other, PROPERTIES_TEXT), &phone(), false), Err(Refusal::OtherDevice("nezha".into())));
         let listed = METADATA_TEXT.replace("pre-device=ishtar", "pre-device=nezha|ishtar");
-        assert_eq!(check(&update_with(&listed, PROPERTIES_TEXT), &phone()), Ok(()));
+        assert_eq!(check(&update_with(&listed, PROPERTIES_TEXT), &phone(), false), Ok(false));
         let serial = format!("{METADATA_TEXT}serialno=abc|def\n");
-        assert_eq!(check(&update_with(&serial, PROPERTIES_TEXT), &phone()), Err(Refusal::OtherSerial));
+        assert_eq!(check(&update_with(&serial, PROPERTIES_TEXT), &phone(), false), Err(Refusal::OtherSerial));
         let ours = format!("{METADATA_TEXT}serialno=abc|2674dc3e\n");
-        assert_eq!(check(&update_with(&ours, PROPERTIES_TEXT), &phone()), Ok(()));
+        assert_eq!(check(&update_with(&ours, PROPERTIES_TEXT), &phone(), false), Ok(false));
         let block = METADATA_TEXT.replace("ota-type=AB", "ota-type=BLOCK");
-        assert_eq!(check(&update_with(&block, PROPERTIES_TEXT), &phone()), Err(Refusal::NotAb("BLOCK".into())));
+        assert_eq!(check(&update_with(&block, PROPERTIES_TEXT), &phone(), false), Err(Refusal::NotAb("BLOCK".into())));
     }
 
     #[test]
@@ -258,19 +268,19 @@ METADATA_SIZE=1024
         let incremental = format!(
             "{METADATA_TEXT}pre-build=Xiaomi/ishtar/ishtar:16/X/OS3.0.305.0.WMACNXM:user/release-keys\npre-build-incremental=OS3.0.305.0.WMACNXM\n"
         );
-        assert_eq!(check(&update_with(&incremental, PROPERTIES_TEXT), &phone()), Err(Refusal::Incremental));
+        assert_eq!(check(&update_with(&incremental, PROPERTIES_TEXT), &phone(), false), Err(Refusal::Incremental));
         let older = METADATA_TEXT.replace("1781000000", "1770000000");
         assert_eq!(
-            check(&update_with(&older, PROPERTIES_TEXT), &phone()),
+            check(&update_with(&older, PROPERTIES_TEXT), &phone(), false),
             Err(Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 })
         );
         let patch = METADATA_TEXT.replace("2026-06-01", "2026-03-01");
         assert_eq!(
-            check(&update_with(&patch, PROPERTIES_TEXT), &phone()),
+            check(&update_with(&patch, PROPERTIES_TEXT), &phone(), false),
             Err(Refusal::OlderPatch { package: "2026-03-01".into(), installed: "2026-04-01".into() })
         );
         let allowed = format!("{}spl-downgrade=yes\n", METADATA_TEXT.replace("2026-06-01", "2026-03-01"));
-        assert_eq!(check(&update_with(&allowed, PROPERTIES_TEXT), &phone()), Ok(()));
+        assert_eq!(check(&update_with(&allowed, PROPERTIES_TEXT), &phone(), false), Ok(false));
     }
 
     #[test]
@@ -279,19 +289,30 @@ METADATA_SIZE=1024
         assert!(!plain.wipes());
         let powerwash = update_with(METADATA_TEXT, &format!("{PROPERTIES_TEXT}POWERWASH=1\n"));
         assert!(powerwash.wipes());
-        assert_eq!(check(&powerwash, &phone()), Ok(()), "erasing is asked of the user, not refused");
+        assert_eq!(check(&powerwash, &phone(), false), Ok(false), "erasing is asked of the user, not refused");
         let wipe = update_with(&format!("{METADATA_TEXT}ota-wipe=yes\n"), PROPERTIES_TEXT);
         assert!(wipe.wipes());
         assert!(!update_with(METADATA_TEXT, &format!("{PROPERTIES_TEXT}POWERWASH=0\n")).wipes());
         let older_patch = format!("{}ota-wipe=yes\n", METADATA_TEXT.replace("2026-06-01", "2026-03-01"));
-        assert_eq!(check(&update_with(&older_patch, PROPERTIES_TEXT), &phone()), Ok(()), "the data it could not read is erased");
+        assert_eq!(check(&update_with(&older_patch, PROPERTIES_TEXT), &phone(), false), Ok(false), "the data it could not read is erased");
     }
 
     #[test]
     fn without_an_installed_system_only_the_package_itself_is_checked() {
         let older = METADATA_TEXT.replace("1781000000", "1770000000");
         let bare = Phone { installed: None, ..phone() };
-        assert_eq!(check(&update_with(&older, PROPERTIES_TEXT), &bare), Ok(()));
+        assert_eq!(check(&update_with(&older, PROPERTIES_TEXT), &bare, false), Ok(false));
+    }
+
+    #[test]
+    fn an_older_package_installs_erasing_the_data_when_allowed() {
+        let older = METADATA_TEXT.replace("1781000000", "1770000000");
+        assert_eq!(check(&update_with(&older, PROPERTIES_TEXT), &phone(), true), Ok(true), "an older build was let in, and data goes with it");
+        let patch = METADATA_TEXT.replace("2026-06-01", "2026-03-01");
+        assert_eq!(check(&update_with(&patch, PROPERTIES_TEXT), &phone(), true), Ok(true), "an older patch level too");
+        assert_eq!(check(&update_with(METADATA_TEXT, PROPERTIES_TEXT), &phone(), true), Ok(false), "one as new as the installed system stays as it is");
+        let block = METADATA_TEXT.replace("ota-type=AB", "ota-type=BLOCK");
+        assert_eq!(check(&update_with(&block, PROPERTIES_TEXT), &phone(), true), Err(Refusal::NotAb("BLOCK".into())), "allowing an older package allows nothing else");
     }
 
     #[test]

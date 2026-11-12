@@ -18,7 +18,7 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 `marble` 加入 Redmi Note 12 Turbo（第二代骁龙 7+ 移动平台）的支持，按照国行
 OS3.0.5.0.VMRCNXM 完整包（Android 15）构建。上游的 `main` 在这里仍为 `main`。
 本分支的发布在 [Releases](https://github.com/lingdiansr/skyward-marble/releases)，
-标签在上游版本后加 `-rc.N` 之类的预发布后缀，例如 `v0.2.0-rc.2`；镜像自身的更新
+标签在上游版本后加 `-rc.N` 之类的预发布后缀，例如 `v0.2.0-rc.3`；镜像自身的更新
 检查指向本 fork 的 Releases。镜像也可以按[构建](#构建)中的步骤构建，再刷入
 recovery 分区。
 
@@ -115,6 +115,8 @@ Release 标为预发布。
 
 刷机包的安装脚本可以使用 `7za` 和 `zstd`，支持刷入 super 镜像使用 zstd 压缩的第三方 ROM；`unzip -p` 边解压边输出镜像。安装脚本还可以使用 `avbctl` 关闭验证启动的校验，使用 `resetprop` 读取和设置属性。
 
+解锁 Bootloader 后，设置页会多出一个选项：**允许安装更旧的系统**。开启后，比当前系统更旧的完整更新包也可以安装，安装完成后会清除 data 分区；Bootloader 已锁定时 Skyward 仍会拒绝旧包。该选项默认关闭。
+
 ### 在线更新
 
 ![系统和 Skyward 都能在线更新](slides/zh-CN/out/05-updates.png)
@@ -199,11 +201,11 @@ Release 标为预发布。
 
 ## 安装 Skyward
 
-Skyward 需要已解锁的 bootloader。从本 fork 的 [Releases](https://github.com/lingdiansr/skyward-marble/releases) 下载对应机型的 zip，或者按[构建](#构建)中的步骤构建镜像。每个 zip 都标有机型和代号，例如 Redmi Note 12 Turbo (marble)，版本在上游版本后加预发布后缀，例如 `v0.2.0-rc.2`。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
+Skyward 需要已解锁的 bootloader。从本 fork 的 [Releases](https://github.com/lingdiansr/skyward-marble/releases) 下载对应机型的 zip，或者按[构建](#构建)中的步骤构建镜像。每个 zip 都标有机型和代号，例如 Redmi Note 12 Turbo (marble)，版本在上游版本后加预发布后缀，例如 `v0.2.0-rc.3`。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
 
 ```sh
-unzip skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.zip
-fastboot flash recovery skyward-v0.2.0-rc.2-marble-OS3.0.5.0.VMRCNXM.img
+unzip skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.zip
+fastboot flash recovery skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.img
 fastboot reboot recovery
 ```
 

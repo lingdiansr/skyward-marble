@@ -385,6 +385,23 @@ pub fn settings(cx: &Ctx) -> Frame {
         "When on, a computer can manage the files in internal storage, once it is decrypted.",
     ]);
     y = widgets::footnote(&mut c, t, f, usb.bottom, note);
+    // An older system starts only on an unlocked bootloader, so the choice
+    // is offered only there.
+    let bootloader_unlocked = cx.info.boot.unlocked.unwrap_or(cx.info.boot.verified.as_deref() == Some("orange"));
+    if bootloader_unlocked {
+        y = widgets::section(&mut c, t, f, y, l.pick(["安装", "安裝", "Install"]));
+        let older = Row::new(l.pick(["允许安装更旧的系统", "允許安裝更舊的系統", "Allow installing an older system"]))
+            .icon(ORANGE, Icon::Install)
+            .trail(Trail::Switch(s.allow_downgrade));
+        let options = widgets::list(&mut c, t, f, y, &[older]);
+        out.extend(hits(&options.rows, &[Action::Toggle(Switch::AllowDowngrade)]));
+        let note = l.pick([
+            "开启后，比当前系统更旧的完整更新包也可以安装；安装时会清除全部数据。",
+            "開啟後，比目前系統更舊的完整更新檔也可以安裝；安裝時會清除全部資料。",
+            "When on, a full OTA older than the installed system installs too, erasing all user data.",
+        ]);
+        y = widgets::footnote(&mut c, t, f, options.bottom, note);
+    }
     y = widgets::section(&mut c, t, f, y, l.pick(["调试", "偵錯", "Debugging"]));
     let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal)]);
     out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));

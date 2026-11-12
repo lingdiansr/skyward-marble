@@ -578,9 +578,10 @@ fn describe(package: &Package) -> String {
 
 fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Result<Done> {
     let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
-    if let Err(refusal) = package::check(update, &phone(slot)?) {
-        return Ok(Done::Decided(Outcome::Refused(refusal)));
-    }
+    let older = match package::check(update, &phone(slot)?, ctx.options.downgrade) {
+        Ok(older) => older,
+        Err(refusal) => return Ok(Done::Decided(Outcome::Refused(refusal))),
+    };
     if let Some(refusal) = short_of_charge(ctx.origin)? {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
     }
@@ -593,7 +594,9 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
         return Ok(Done::Decided(Outcome::Cancelled));
     }
     let version = update.version().map(str::to_string);
-    let wipe = update.wipes();
+    // An older system may install only with the data partition erased: the
+    // newer system's data is not what it can read.
+    let wipe = update.wipes() || older;
     if waits(ctx.origin, wipe) {
         ctx.send(Event::Ready { version: version.clone(), wipe });
         match ctx.commands.recv() {
