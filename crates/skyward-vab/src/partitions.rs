@@ -396,7 +396,9 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
 /// stays mounted for the update.
 pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
     for m in mounted_partitions(slot)?.into_iter().rev() {
-        if busy.contains(&m.mount_point) {
+        // A loop device backed by a file on the partition holds the mount
+        // busy too, as the VNDK bundle does when it is on system_ext.
+        if busy.contains(&m.mount_point) || mount::loop_backed(&m.mount_point).unwrap_or(false) {
             mount::umount_detach_over(&m.mount_point)?;
         } else {
             mount::umount_over(&m.mount_point)?;

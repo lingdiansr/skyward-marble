@@ -135,6 +135,25 @@ mod sys {
         Ok(())
     }
 
+    /// Whether a loop device is backed by a file on the mount at `target`.
+    /// The mount cannot leave the tree while such a loop is there, and the
+    /// partition it is on cannot be written over until the loop goes.
+    pub fn loop_backed(target: &Path) -> Result<bool> {
+        for entry in fs::read_dir("/sys/block").context("read /sys/block")? {
+            let entry = entry.context("read /sys/block")?;
+            if !entry.file_name().to_string_lossy().starts_with("loop") {
+                continue;
+            }
+            let Ok(backing) = fs::read_to_string(entry.path().join("loop/backing_file")) else {
+                continue;
+            };
+            if Path::new(backing.trim()).starts_with(target) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn mounts() -> Result<Vec<MountInfo>> {
         Ok(Process::myself()?.mountinfo()?.0)
     }
@@ -440,6 +459,10 @@ mod sys {
         bail!("this host has no mount table to look up {}", path.display())
     }
 
+    pub fn loop_backed(_target: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
     pub fn visible(path: &Path) -> Result<Option<Visible>> {
         bail!("this host has no mount table to look up {}", path.display())
     }
@@ -466,8 +489,8 @@ mod sys {
 }
 
 pub use sys::{
-    bind, holders, holding, is_mount_point, mount, mount_ids, mount_ro, mount_ro_over, points_of, remount_writable, umount,
-    umount_detach, umount_detach_over, umount_over, visible,
+    bind, holders, holding, is_mount_point, loop_backed, mount, mount_ids, mount_ro, mount_ro_over, points_of,
+    remount_writable, umount, umount_detach, umount_detach_over, umount_over, visible,
 };
 
 #[cfg(test)]
