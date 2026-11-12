@@ -69,7 +69,12 @@ impl StoredKey {
         if version.trim() != VERSION {
             bail!("{} is written in layout {}, Skyward reads layout {VERSION}", dir.display(), version.trim());
         }
-        if dir.join(FN_STRETCHING).exists() {
+        // Android writes "none" for a key wrapped by a secret in software
+        // and "nopassword" for one the hardware holds without a password;
+        // any other value stretches the secret with scrypt, which Skyward
+        // cannot reproduce.
+        let stretching = fs::read_to_string(dir.join(FN_STRETCHING)).ok();
+        if stretching.as_deref().is_some_and(|s| !matches!(s.trim(), "none" | "nopassword")) {
             bail!("{} was written by an Android too old for Skyward to read", dir.display());
         }
         let secdiscardable_hash = match dir.join(FN_SECDISCARDABLE).exists() {
@@ -235,6 +240,17 @@ mod tests {
         fs::remove_file(dir.join(FN_STRETCHING)).unwrap();
         fs::write(dir.join(FN_VERSION), "2").unwrap();
         assert!(refusal(&dir).contains("layout 2"), "{}", refusal(&dir));
+    }
+
+    #[test]
+    fn a_key_written_without_stretching_is_read() {
+        for said in ["none", "nopassword"] {
+            let dir = tempdir(&format!("no-stretch-{said}"));
+            fs::write(dir.join(FN_VERSION), "1").unwrap();
+            fs::write(dir.join(FN_ENCRYPTED_KEY), [0u8; 64]).unwrap();
+            fs::write(dir.join(FN_STRETCHING), said).unwrap();
+            assert!(StoredKey::load(&dir).is_ok(), "{said}");
+        }
     }
 
     #[test]
