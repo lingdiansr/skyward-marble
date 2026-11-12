@@ -120,6 +120,52 @@ impl ModuleGraph {
     }
 }
 
+/// Whether the module `name`, which the kernel has loaded, is serving a
+/// device: one of the drivers it registered has a device bound to it. A
+/// module that is not is free to be taken out and put back, so that it
+/// binds after the modules it registers with; one that is serving a device
+/// is left alone, because taking it out stops that device.
+pub fn in_use(name: &str) -> bool {
+    in_use_in(Path::new("/sys/bus"), name)
+}
+
+fn in_use_in(buses: &Path, name: &str) -> bool {
+    let Ok(buses) = fs::read_dir(buses) else {
+        return false;
+    };
+    for bus in buses.flatten() {
+        let Ok(drivers) = fs::read_dir(bus.path().join("drivers")) else {
+            continue;
+        };
+        for driver in drivers.flatten() {
+            let Ok(module) = fs::read_link(driver.path().join("module")) else {
+                continue;
+            };
+            if module.file_name().and_then(|n| n.to_str()) != Some(name) {
+                continue;
+            }
+            if serving(&driver.path()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a driver directory holds a bound device: the device's name is a
+/// symbol among the files the driver's own interface keeps there.
+fn serving(driver: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(driver) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        !matches!(
+            entry.file_name().to_str(),
+            Some("module" | "bind" | "unbind" | "uevent" | "new_id" | "remove_id")
+        ) && entry.path().is_symlink()
+    })
+}
+
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     let rd = fs::read_dir(dir).ok()?;
     for e in rd.flatten() {
@@ -181,5 +227,19 @@ mod tests {
     #[test]
     fn strips_paths_to_basenames() {
         assert_eq!(basename("kernel/drivers/foo/bar.ko"), "bar.ko");
+    }
+
+    #[test]
+    fn a_module_serving_a_device_is_in_use() {
+        let root = std::env::temp_dir().join(format!("skyward-modules-in-use-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let driver = root.join("spi/drivers/gtx8_spi");
+        fs::create_dir_all(&driver).unwrap();
+        std::os::unix::fs::symlink("../../../../module/goodix_core", driver.join("module")).unwrap();
+        assert!(!in_use_in(&root, "goodix_core"), "no device bound yet");
+        std::os::unix::fs::symlink("../../../../devices/spi0.0", driver.join("spi0.0")).unwrap();
+        assert!(in_use_in(&root, "goodix_core"), "the driver serves a device");
+        assert!(!in_use_in(&root, "xiaomi_touch"), "another module is not this one");
+        fs::remove_dir_all(&root).unwrap();
     }
 }

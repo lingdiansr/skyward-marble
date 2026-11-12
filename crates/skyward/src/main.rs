@@ -565,11 +565,15 @@ fn lp(super_dev: &Path, slot: Option<u32>) -> Result<()> {
 
 /// Load `names` from the module sources the configuration lists. Those the
 /// configuration says the recovery's own init loaded too early are taken out
-/// first, so that they go back in after the modules they register with.
+/// first, so that they go back in after the modules they register with; one
+/// that already serves a device is left in, or taking it out would stop that
+/// device.
 fn load_modules(cfg: &DeviceConfig, names: &[String]) -> Result<Vec<PathBuf>> {
     #[cfg(target_os = "android")]
     for name in &cfg.modules.reload {
-        unload_module(name);
+        if !skyward_modules::in_use(name) {
+            unload_module(name);
+        }
     }
     let dirs = cfg
         .modules
