@@ -97,8 +97,11 @@ impl<'a> BootControl<'a> {
     /// otherwise. Say so where it is not running.
     pub fn open(binder: &'a Binder, hardware: &'a Binder) -> Result<BootControl<'a>> {
         let not_running = |name: &str| format!("{name} is not running; the phone's boot control has to be started first");
-        if service::declared(binder, SERVICE)? {
-            let control = service::find(binder, SERVICE)?.with_context(|| not_running(SERVICE))?;
+        // `getService` is the directory's first method in every Android
+        // version; `isDeclared` and `checkService` moved when methods were
+        // added, and a recovery's directory need not match the installed
+        // system's SDK. A service found this way is the newer kind.
+        if let Ok(Some(control)) = service::get(binder, SERVICE) {
             return Ok(BootControl::Newer(control));
         }
         let control = hidl::find(hardware, HARDWARE_SERVICE, INSTANCE)?.with_context(|| not_running(HARDWARE_SERVICE))?;

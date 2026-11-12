@@ -100,6 +100,24 @@ pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<
     }
 }
 
+/// The service `name` names, asking the directory to start it where it is
+/// lazy. `getService` is the directory's first method in every Android
+/// version, unlike `checkService` and `isDeclared`, whose numbers moved
+/// when methods were added.
+#[cfg(target_os = "android")]
+pub fn get<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<crate::driver::Handle<'a>>> {
+    let directory = binder.directory()?;
+    let mut call = Parcel::call(DIRECTORY);
+    call.string(name);
+    let reply = directory.transact(1, &call).with_context(|| format!("look up {name}"))?;
+    let mut read = reply.read();
+    status::ok(&mut read).with_context(|| format!("look up {name}"))?;
+    match read.object().with_context(|| format!("read what the directory answered for {name}"))? {
+        Some(handle) => Ok(Some(crate::driver::Handle::hold(binder, handle)?)),
+        None => Ok(None),
+    }
+}
+
 /// Every name registered with the directory, the directory's own among
 /// them.
 #[cfg(target_os = "android")]
