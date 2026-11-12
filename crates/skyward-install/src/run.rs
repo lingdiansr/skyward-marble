@@ -29,6 +29,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -678,6 +679,188 @@ fn detach_once(ctx: &mut Context) -> Result<()> {
     }
 }
 
+/// The kernel creates a device-mapper device before ueventd has made its
+/// node, while update_engine opens the node the moment it creates one.
+/// After the detach has removed the installed system's devices, wait for
+/// ueventd to finish and make a node for every minor an update can take.
+fn prime_device_mapper() -> Result<()> {
+    let major = device_mapper_major()?;
+    let mut last = dm_nodes()?;
+    let mut calm = 0;
+    for _ in 0..100 {
+        thread::sleep(Duration::from_millis(10));
+        let now = dm_nodes()?;
+        calm = if now == last { calm + 1 } else { 0 };
+        if calm >= 5 {
+            break;
+        }
+        last = now;
+    }
+    for minor in 0..64 {
+        let path = format!("/dev/block/dm-{minor}");
+        if Path::new(&path).exists() {
+            continue;
+        }
+        let name = std::ffi::CString::new(path.clone()).context("the device name holds no NUL")?;
+        let device = libc::makedev(major, minor);
+        let mode = libc::S_IFBLK | 0o600;
+        if unsafe { libc::mknod(name.as_ptr(), mode, device) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != ErrorKind::AlreadyExists {
+                return Err(e).with_context(|| format!("create {}", path));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dm_nodes() -> Result<Vec<String>> {
+    let mut nodes = Vec::new();
+    for entry in fs::read_dir("/dev/block")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if let Some(name) = name.to_str() {
+            if name.starts_with("dm-") {
+                nodes.push(name.to_string());
+            }
+        }
+    }
+    nodes.sort();
+    Ok(nodes)
+}
+
+fn device_mapper_major() -> Result<libc::c_uint> {
+    let devices = fs::read_to_string("/proc/devices")?;
+    for line in devices.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(major), Some(kind)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if kind == "device-mapper" {
+            return major.parse().context("the device-mapper major");
+        }
+    }
+    bail!("no device-mapper major in /proc/devices")
+}
+
+// ueventd keeps running while the update runs. It makes every node
+// update_engine waits for, and `DeviceMapper::CreateDevice` waits for the
+// `/dev/block/mapper` link that only ueventd makes; for the COW devices
+// libsnapshot gives that wait no timeout at all. Holding ueventd still
+// leaves that link missing and the update asleep for good — the watcher
+// below only covers the moment a minor is reused, when the old node is
+// gone and ueventd has not answered the new device yet.
+
+/// update_engine makes and removes device-mapper devices while it runs,
+/// and opens each node as soon as it makes the device. For a reused minor
+/// the old node is gone and ueventd has not made the new one yet, so keep
+/// making the node of every device that appears until the update ends.
+struct DmNodeWatch {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl DmNodeWatch {
+    fn start() -> Self {
+        let _ = make_dm_nodes();
+        let stop = Arc::new(AtomicBool::new(false));
+        let watched = Arc::clone(&stop);
+        let thread = thread::spawn(move || watch_dm_nodes(&watched));
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for DmNodeWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn watch_dm_nodes(stop: &AtomicBool) {
+    let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+    if fd < 0 {
+        while !stop.load(Ordering::Relaxed) {
+            let _ = make_dm_nodes();
+            thread::sleep(Duration::from_millis(1));
+        }
+        return;
+    }
+    let path = std::ffi::CString::new("/sys/block").expect("the sysfs block path holds no NUL");
+    let watched = unsafe {
+        libc::inotify_add_watch(
+            fd,
+            path.as_ptr(),
+            libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ATTRIB,
+        )
+    };
+    if watched < 0 {
+        while !stop.load(Ordering::Relaxed) {
+            let _ = make_dm_nodes();
+            thread::sleep(Duration::from_millis(1));
+        }
+        unsafe { libc::close(fd) };
+        return;
+    }
+    let mut buf = [0u8; 4096];
+    while !stop.load(Ordering::Relaxed) {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n > 0 {
+            let _ = make_dm_nodes();
+        } else {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    unsafe { libc::close(fd) };
+}
+
+fn make_dm_nodes() -> Result<()> {
+    for entry in fs::read_dir("/sys/block")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("dm-") {
+            continue;
+        }
+        let dev = match fs::read_to_string(entry.path().join("dev")) {
+            Ok(dev) => dev,
+            Err(_) => continue,
+        };
+        let Some((major, minor)) = dev.trim().split_once(':') else {
+            continue;
+        };
+        let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+            continue;
+        };
+        let path = format!("/dev/block/{name}");
+        if Path::new(&path).exists() {
+            continue;
+        }
+        let node = std::ffi::CString::new(path.clone()).context("the device name holds no NUL")?;
+        if unsafe {
+            libc::mknod(
+                node.as_ptr(),
+                libc::S_IFBLK | 0o600,
+                libc::makedev(major, minor),
+            )
+        } != 0
+        {
+            let e = io::Error::last_os_error();
+            if e.kind() != ErrorKind::AlreadyExists {
+                // A device can go away between reading it and making its
+                // node; the next event makes the node of its replacement.
+                continue;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn describe(package: &Package) -> String {
     match package {
         Package::Update(u) => format!(
@@ -730,6 +913,7 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
     detach_once(ctx)?;
+    prime_device_mapper().context("prepare the device-mapper nodes for update_engine")?;
     // update_engine mounts /metadata itself, as in the stock recovery, keeps
     // the update's state there, and unmounts it when done. The recovery
     // reads the state from it read-only again afterwards.
@@ -862,6 +1046,7 @@ fn screen_line(line: &str) -> Option<String> {
 }
 
 fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
+    let _dm_nodes = DmNodeWatch::start();
     let (status_read, status_write) = pipe(0)?;
     let status_fd = status_write.as_raw_fd();
     let mut command = std::process::Command::new(ota::PROGRAM);
