@@ -40,7 +40,10 @@ const CHUNK: usize = 1 << 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageKind {
     /// A boot image; what it carries decides where it can go.
-    Boot { kernel: bool, ramdisk: Ramdisk },
+    Boot {
+        kernel: bool,
+        ramdisk: Ramdisk,
+    },
     VendorBoot,
     Dtbo,
     Vbmeta,
@@ -62,8 +65,14 @@ impl ImageKind {
     /// a phone whose recovery lives in boot; without one it needs boot's.
     pub fn partitions(self) -> &'static [&'static str] {
         match self {
-            ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery } => &["recovery", "boot"],
-            ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Recovery } => &["recovery"],
+            ImageKind::Boot {
+                kernel: true,
+                ramdisk: Ramdisk::Recovery,
+            } => &["recovery", "boot"],
+            ImageKind::Boot {
+                kernel: false,
+                ramdisk: Ramdisk::Recovery,
+            } => &["recovery"],
             ImageKind::Boot { kernel: true, .. } => &["boot"],
             ImageKind::Boot { kernel: false, .. } => &["init_boot"],
             ImageKind::VendorBoot => &["vendor_boot"],
@@ -82,11 +91,15 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
         let ramdisk = match header.ramdisk_size() {
             0 => Ramdisk::None,
             size => {
-                file.seek(SeekFrom::Start(header.ramdisk_position() as u64)).context("seek to the ramdisk")?;
+                file.seek(SeekFrom::Start(header.ramdisk_position() as u64))
+                    .context("seek to the ramdisk")?;
                 ramdisk(file.take(u64::from(size))).context("read the ramdisk")?
             }
         };
-        ensure!(kernel || ramdisk != Ramdisk::None, "the boot image holds neither a kernel nor a ramdisk");
+        ensure!(
+            kernel || ramdisk != Ramdisk::None,
+            "the boot image holds neither a kernel nor a ramdisk"
+        );
         return Ok(Some(ImageKind::Boot { kernel, ramdisk }));
     }
     if head.starts_with(VENDOR_BOOT_MAGIC) {
@@ -104,10 +117,12 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
 
 /// Whether a packed ramdisk is a recovery's, by the names in its archive.
 fn ramdisk(packed: impl Read) -> Result<Ramdisk> {
-    Ok(match holds(packed, |name| RECOVERY_PROGRAMS.contains(&name))? {
-        true => Ramdisk::Recovery,
-        false => Ramdisk::Generic,
-    })
+    Ok(
+        match holds(packed, |name| RECOVERY_PROGRAMS.contains(&name))? {
+            true => Ramdisk::Recovery,
+            false => Ramdisk::Generic,
+        },
+    )
 }
 
 /// Whether a packed ramdisk has an entry whose name `wanted` picks.
@@ -118,17 +133,40 @@ fn holds(packed: impl Read, wanted: impl Fn(&str) -> bool) -> Result<bool> {
 /// What `take` makes of the first entry of a packed ramdisk whose name
 /// `wanted` picks, read from its start; none when no entry's name is
 /// picked.
-fn find<T>(packed: impl Read, wanted: impl Fn(&str) -> bool, take: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<Option<T>> {
+fn find<T>(
+    packed: impl Read,
+    wanted: impl Fn(&str) -> bool,
+    take: impl FnOnce(&mut dyn Read) -> Result<T>,
+) -> Result<Option<T>> {
     let mut packed = BufReader::new(packed);
-    let start = packed.fill_buf().context("read the ramdisk's first bytes")?;
-    let mut rest: Box<dyn Read + '_> = if start.starts_with(LZ4_LEGACY) || start.starts_with(LZ4_FRAME) {
+    let (legacy, frame, gzip, newc, head) = {
+        let start = packed
+            .fill_buf()
+            .context("read the ramdisk's first bytes")?;
+        (
+            start.starts_with(LZ4_LEGACY),
+            start.starts_with(LZ4_FRAME),
+            start.starts_with(GZIP),
+            start.starts_with(NEWC),
+            start[..start.len().min(4)].to_vec(),
+        )
+    };
+    // A legacy stream's blocks are the packer's to size, and are larger than
+    // the frame decoder takes them to be; unpack it whole instead.
+    let mut rest: Box<dyn Read + '_> = if legacy {
+        let mut all = Vec::new();
+        packed.read_to_end(&mut all).context("read the ramdisk")?;
+        Box::new(Cursor::new(
+            skyward_bootimg::unlz4_legacy(&all).context("unpack the ramdisk")?,
+        ))
+    } else if frame {
         Box::new(lz4_flex::frame::FrameDecoder::new(packed))
-    } else if start.starts_with(GZIP) {
+    } else if gzip {
         Box::new(flate2::bufread::MultiGzDecoder::new(packed))
-    } else if start.starts_with(NEWC) {
+    } else if newc {
         Box::new(packed)
     } else {
-        bail!("a ramdisk packed in an unknown way, starting {:02x?}", &start[..start.len().min(4)]);
+        bail!("a ramdisk packed in an unknown way, starting {head:02x?}");
     };
     loop {
         let mut entry = cpio::NewcReader::new(rest).context("read a ramdisk entry")?;
@@ -153,7 +191,9 @@ pub fn is_skyward<R: Read + Seek>(file: &mut R) -> Result<bool> {
 /// none when `file` is no Skyward recovery.
 pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
     let mut head = Vec::with_capacity(4096);
-    file.take(4096).read_to_end(&mut head).context("read the image's first bytes")?;
+    file.take(4096)
+        .read_to_end(&mut head)
+        .context("read the image's first bytes")?;
     if !head.starts_with(BOOT_MAGIC) {
         return Ok(None);
     }
@@ -161,18 +201,31 @@ pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
     if header.ramdisk_size() == 0 {
         return Ok(None);
     }
-    file.seek(SeekFrom::Start(header.ramdisk_position() as u64)).context("seek to the ramdisk")?;
+    file.seek(SeekFrom::Start(header.ramdisk_position() as u64))
+        .context("seek to the ramdisk")?;
     let mut ramdisk = BufReader::new(file.take(u64::from(header.ramdisk_size())));
-    let start = ramdisk.fill_buf().context("read the ramdisk's first bytes")?;
-    if ![LZ4_LEGACY, LZ4_FRAME, GZIP, NEWC].iter().any(|magic| start.starts_with(magic)) {
+    let start = ramdisk
+        .fill_buf()
+        .context("read the ramdisk's first bytes")?;
+    if ![LZ4_LEGACY, LZ4_FRAME, GZIP, NEWC]
+        .iter()
+        .any(|magic| start.starts_with(magic))
+    {
         return Ok(None);
     }
     let read = |entry: &mut dyn Read| {
         let mut config = Vec::new();
-        entry.read_to_end(&mut config).context("read the device configuration")?;
+        entry
+            .read_to_end(&mut config)
+            .context("read the device configuration")?;
         Ok(config)
     };
-    find(ramdisk, |name| name == skyward_config::ramdisk::CONFIG, read).context("read the ramdisk")
+    find(
+        ramdisk,
+        |name| name == skyward_config::ramdisk::CONFIG,
+        read,
+    )
+    .context("read the ramdisk")
 }
 
 /// The partition `name` of `slot` among the links in `dir`.
@@ -188,7 +241,9 @@ pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
         let mut has = true;
         for slot in [Slot::A, Slot::B] {
             let path = device(dir, name, slot);
-            has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
+            has &= path
+                .try_exists()
+                .with_context(|| format!("look for {}", path.display()))?;
         }
         if has {
             found.push(*name);
@@ -202,28 +257,54 @@ pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
 /// its footer moved to the partition's end, with zeros between, as
 /// fastboot does. `progress` hears the bytes written and read back so far,
 /// of all.
-pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+pub fn flash<R: Read + Seek>(
+    image: &mut R,
+    len: u64,
+    devices: &[PathBuf],
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<()> {
     ensure!(!devices.is_empty(), "no partition to write");
     let mut outs = Vec::with_capacity(devices.len());
     for path in devices {
-        let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
         make_writable(&f, path)?;
-        let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
-        f.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", path.display()))?;
+        let size = f
+            .seek(SeekFrom::End(0))
+            .with_context(|| format!("find the size of {}", path.display()))?;
+        f.seek(SeekFrom::Start(0))
+            .with_context(|| format!("rewind {}", path.display()))?;
         outs.push((path, f, size));
     }
     let size = outs[0].2;
-    ensure!(outs.iter().all(|(_, _, s)| *s == size), "the partition differs in size between slots");
-    ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
+    ensure!(
+        outs.iter().all(|(_, _, s)| *s == size),
+        "the partition differs in size between slots"
+    );
+    ensure!(
+        len <= size,
+        "the image is {len} bytes, more than the {size} its partition holds"
+    );
 
     let mut footer = [0u8; FOOTER_LEN as usize];
     let moved = len >= FOOTER_LEN && len < size && {
-        image.seek(SeekFrom::Start(len - FOOTER_LEN)).context("seek to the image's end")?;
-        image.read_exact(&mut footer).context("read the image's end")?;
+        image
+            .seek(SeekFrom::Start(len - FOOTER_LEN))
+            .context("seek to the image's end")?;
+        image
+            .read_exact(&mut footer)
+            .context("read the image's end")?;
         footer.starts_with(FOOTER_MAGIC)
     };
     image.seek(SeekFrom::Start(0)).context("rewind the image")?;
-    let (gap, tail): (u64, &[u8]) = if moved { (size - len - FOOTER_LEN, &footer) } else { (0, &[]) };
+    let (gap, tail): (u64, &[u8]) = if moved {
+        (size - len - FOOTER_LEN, &footer)
+    } else {
+        (0, &[])
+    };
     let end = len + gap + tail.len() as u64;
     let total = end * outs.len() as u64 * 2;
     let mut source = image.take(len).chain(io::repeat(0).take(gap)).chain(tail);
@@ -237,7 +318,8 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
         source.read_exact(&mut buf[..n]).context("read the image")?;
         written.update(&buf[..n]);
         for (path, f, _) in &mut outs {
-            f.write_all(&buf[..n]).with_context(|| format!("write {}", path.display()))?;
+            f.write_all(&buf[..n])
+                .with_context(|| format!("write {}", path.display()))?;
             done += n as u64;
             progress(done, total);
         }
@@ -245,22 +327,29 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
     }
     let written = written.finalize();
     for (path, f, _) in &mut outs {
-        f.sync_all().with_context(|| format!("flush {}", path.display()))?;
+        f.sync_all()
+            .with_context(|| format!("flush {}", path.display()))?;
         drop_cache(f).with_context(|| format!("drop the cached pages of {}", path.display()))?;
     }
     for (path, f, _) in &mut outs {
-        f.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", path.display()))?;
+        f.seek(SeekFrom::Start(0))
+            .with_context(|| format!("rewind {}", path.display()))?;
         let mut back = Sha256::new();
         let mut left = end;
         while left > 0 {
             let n = left.min(CHUNK as u64) as usize;
-            f.read_exact(&mut buf[..n]).with_context(|| format!("read back {}", path.display()))?;
+            f.read_exact(&mut buf[..n])
+                .with_context(|| format!("read back {}", path.display()))?;
             back.update(&buf[..n]);
             left -= n as u64;
             done += n as u64;
             progress(done, total);
         }
-        ensure!(back.finalize() == written, "{} reads back different from what was written", path.display());
+        ensure!(
+            back.finalize() == written,
+            "{} reads back different from what was written",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -270,13 +359,19 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
 /// `BLKROSET` turns the device writable again. Regular files, which the
 /// tests write, are not block devices and are left alone.
 fn make_writable(f: &File, path: &Path) -> Result<()> {
-    if !f.metadata().with_context(|| format!("look at {}", path.display()))?.file_type().is_block_device() {
+    if !f
+        .metadata()
+        .with_context(|| format!("look at {}", path.display()))?
+        .file_type()
+        .is_block_device()
+    {
         return Ok(());
     }
     // `_IO(0x12, 93)`, `BLKROSET`: the flag is written through the argument.
     let writable: libc::c_int = 0;
     if unsafe { libc::ioctl(f.as_raw_fd(), 0x125d, &writable) } != 0 {
-        return Err(io::Error::last_os_error()).with_context(|| format!("make {} writable", path.display()));
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("make {} writable", path.display()));
     }
     Ok(())
 }
@@ -313,7 +408,11 @@ pub(crate) mod samples {
     pub fn archive(names: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
         for name in names {
-            out = cpio::NewcBuilder::new(name).mode(0o100644).write(out, 0).finish().unwrap();
+            out = cpio::NewcBuilder::new(name)
+                .mode(0o100644)
+                .write(out, 0)
+                .finish()
+                .unwrap();
         }
         cpio::newc::trailer(out).unwrap()
     }
@@ -334,8 +433,14 @@ pub(crate) mod samples {
     pub fn skyward_for(codename: &str) -> Vec<u8> {
         let config = format!("[device]\ncodename = \"{codename}\"\n");
         let mut out = Vec::new();
-        for (name, data) in [("init", &b""[..]), ("system/bin/recovery", b""), ("skyward/device.toml", config.as_bytes())] {
-            let mut entry = cpio::NewcBuilder::new(name).mode(0o100644).write(out, data.len() as u32);
+        for (name, data) in [
+            ("init", &b""[..]),
+            ("system/bin/recovery", b""),
+            ("skyward/device.toml", config.as_bytes()),
+        ] {
+            let mut entry = cpio::NewcBuilder::new(name)
+                .mode(0o100644)
+                .write(out, data.len() as u32);
             entry.write_all(data).unwrap();
             out = entry.finish().unwrap();
         }
@@ -362,42 +467,129 @@ mod tests {
 
     #[test]
     fn boot_images_go_where_what_they_carry_fits() {
-        let recovery = archive(&["init", "system", "system/bin", "system/bin/recovery", "sbin"]);
+        let recovery = archive(&[
+            "init",
+            "system",
+            "system/bin",
+            "system/bin/recovery",
+            "sbin",
+        ]);
         let generic = archive(&["init", "first_stage_ramdisk", "system/bin/snapuserd"]);
 
-        let kind = kind_of(&boot_image(0, &lz4_legacy(&recovery))).unwrap().unwrap();
-        assert_eq!(kind, ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Recovery });
+        let kind = kind_of(&boot_image(0, &lz4_legacy(&recovery)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            kind,
+            ImageKind::Boot {
+                kernel: false,
+                ramdisk: Ramdisk::Recovery
+            }
+        );
         assert_eq!(kind.partitions(), ["recovery"]);
         let kind = kind_of(&boot_image(0, &gzip(&generic))).unwrap().unwrap();
-        assert_eq!(kind, ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Generic });
+        assert_eq!(
+            kind,
+            ImageKind::Boot {
+                kernel: false,
+                ramdisk: Ramdisk::Generic
+            }
+        );
         assert_eq!(kind.partitions(), ["init_boot"]);
         let kind = kind_of(&boot_image(5000, &recovery)).unwrap().unwrap();
         assert_eq!(kind.partitions(), ["recovery", "boot"]);
-        let kind = kind_of(&boot_image(5000, &lz4_legacy(&generic))).unwrap().unwrap();
-        assert_eq!(kind, ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Generic });
+        let kind = kind_of(&boot_image(5000, &lz4_legacy(&generic)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            kind,
+            ImageKind::Boot {
+                kernel: true,
+                ramdisk: Ramdisk::Generic
+            }
+        );
         assert_eq!(kind.partitions(), ["boot"]);
-        assert_eq!(kind_of(&boot_image(5000, &[])).unwrap(), Some(ImageKind::Boot { kernel: true, ramdisk: Ramdisk::None }));
+        assert_eq!(
+            kind_of(&boot_image(5000, &[])).unwrap(),
+            Some(ImageKind::Boot {
+                kernel: true,
+                ramdisk: Ramdisk::None
+            })
+        );
 
         assert!(kind_of(&boot_image(0, &[])).is_err());
-        assert!(kind_of(&boot_image(0, b"BZh91AY&SY")).is_err(), "a ramdisk packed some other way");
+        assert!(
+            kind_of(&boot_image(0, b"BZh91AY&SY")).is_err(),
+            "a ramdisk packed some other way"
+        );
         assert!(kind_of(b"ANDROID!").is_err());
+    }
+
+    #[test]
+    fn a_ramdisk_whose_legacy_block_exceeds_8_mib_is_read() {
+        // The legacy LZ4 framing has no block size in it, so a packer may
+        // make blocks bigger than the 8 MiB the frame decoder allows; the
+        // vendor recoveries this phone is flashed with are packed so.
+        let mut x: u32 = 0x1234_5678;
+        let mut data = vec![0u8; 8 << 20];
+        for b in data.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        let mut archive = Vec::new();
+        let mut entry = cpio::NewcBuilder::new("system/bin/recovery")
+            .mode(0o100750)
+            .write(archive, data.len() as u32);
+        entry.write_all(&data).unwrap();
+        archive = entry.finish().unwrap();
+        let archive = cpio::newc::trailer(archive).unwrap();
+        let packed = lz4_legacy(&archive);
+        assert!(
+            lz4_flex::frame::FrameDecoder::new(packed.as_slice())
+                .read_to_end(&mut Vec::new())
+                .is_err(),
+            "the frame decoder still refuses such a block"
+        );
+        assert_eq!(
+            kind_of(&boot_image(0, &packed)).unwrap(),
+            Some(ImageKind::Boot {
+                kernel: false,
+                ramdisk: Ramdisk::Recovery
+            })
+        );
     }
 
     #[test]
     fn skyward_is_told_from_the_stock_recovery_it_is_packed_on() {
         assert!(is_skyward(&mut Cursor::new(recovery(true))).unwrap());
         assert!(!is_skyward(&mut Cursor::new(recovery(false))).unwrap());
-        assert!(!is_skyward(&mut Cursor::new(boot_image(5000, &[]))).unwrap(), "a boot image with no ramdisk");
-        assert!(!is_skyward(&mut Cursor::new(boot_image(0, b"\xfd7zXZ\0"))).unwrap(), "a ramdisk packed as Skyward never packs it");
-        assert!(!is_skyward(&mut Cursor::new(vec![0u8; 8192])).unwrap(), "an erased partition");
+        assert!(
+            !is_skyward(&mut Cursor::new(boot_image(5000, &[]))).unwrap(),
+            "a boot image with no ramdisk"
+        );
+        assert!(
+            !is_skyward(&mut Cursor::new(boot_image(0, b"\xfd7zXZ\0"))).unwrap(),
+            "a ramdisk packed as Skyward never packs it"
+        );
+        assert!(
+            !is_skyward(&mut Cursor::new(vec![0u8; 8192])).unwrap(),
+            "an erased partition"
+        );
     }
 
     #[test]
     fn skyward_carries_its_device_configuration() {
-        let config = device_config(&mut Cursor::new(skyward_for("ishtar"))).unwrap().expect("Skyward carries one");
+        let config = device_config(&mut Cursor::new(skyward_for("ishtar")))
+            .unwrap()
+            .expect("Skyward carries one");
         assert_eq!(config, b"[device]\ncodename = \"ishtar\"\n");
         assert!(is_skyward(&mut Cursor::new(skyward_for("ishtar"))).unwrap());
-        assert_eq!(device_config(&mut Cursor::new(recovery(false))).unwrap(), None);
+        assert_eq!(
+            device_config(&mut Cursor::new(recovery(false))).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -421,8 +613,14 @@ mod tests {
         };
         let mut bytes = Cursor::new(Vec::new());
         vendor.write(&mut bytes).unwrap();
-        assert_eq!(kind_of(bytes.get_ref()).unwrap(), Some(ImageKind::VendorBoot));
-        assert_eq!(kind_of(&[0xd7, 0xb7, 0xab, 0x1e, 0, 0, 0, 0x40]).unwrap(), Some(ImageKind::Dtbo));
+        assert_eq!(
+            kind_of(bytes.get_ref()).unwrap(),
+            Some(ImageKind::VendorBoot)
+        );
+        assert_eq!(
+            kind_of(&[0xd7, 0xb7, 0xab, 0x1e, 0, 0, 0, 0x40]).unwrap(),
+            Some(ImageKind::Dtbo)
+        );
         assert_eq!(kind_of(b"AVB0\0\0\0\x01").unwrap(), Some(ImageKind::Vbmeta));
         assert_eq!(kind_of(b"\x3a\xff\x26\xed sparse").unwrap(), None);
     }
@@ -430,12 +628,28 @@ mod tests {
     #[test]
     fn only_partitions_the_phone_has_in_both_slots_are_offered() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["boot_a", "boot_b", "recovery_a", "recovery_b", "init_boot_a", "init_boot_b", "vbmeta_a", "vbmeta_b", "vbmeta_system_a"] {
+        for name in [
+            "boot_a",
+            "boot_b",
+            "recovery_a",
+            "recovery_b",
+            "init_boot_a",
+            "init_boot_b",
+            "vbmeta_a",
+            "vbmeta_b",
+            "vbmeta_system_a",
+        ] {
             std::fs::File::create(dir.path().join(name)).unwrap();
         }
-        let both = ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery };
+        let both = ImageKind::Boot {
+            kernel: true,
+            ramdisk: Ramdisk::Recovery,
+        };
         assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
-        assert_eq!(partitions(ImageKind::Vbmeta, dir.path()).unwrap(), ["vbmeta"]);
+        assert_eq!(
+            partitions(ImageKind::Vbmeta, dir.path()).unwrap(),
+            ["vbmeta"]
+        );
         assert!(partitions(ImageKind::Dtbo, dir.path()).unwrap().is_empty());
     }
 
@@ -449,14 +663,22 @@ mod tests {
 
     fn flash_all(image: &[u8], devices: &[PathBuf]) -> Result<Vec<(u64, u64)>> {
         let mut seen = Vec::new();
-        flash(&mut Cursor::new(image), image.len() as u64, devices, &mut |done, total| seen.push((done, total)))?;
+        flash(
+            &mut Cursor::new(image),
+            image.len() as u64,
+            devices,
+            &mut |done, total| seen.push((done, total)),
+        )?;
         Ok(seen)
     }
 
     #[test]
     fn an_unsigned_image_leaves_the_rest_of_the_partition_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let slots = [partition(dir.path(), "dtbo_a", 3 << 20), partition(dir.path(), "dtbo_b", 3 << 20)];
+        let slots = [
+            partition(dir.path(), "dtbo_a", 3 << 20),
+            partition(dir.path(), "dtbo_b", 3 << 20),
+        ];
         let image: Vec<u8> = (0..(1 << 20) + 300).map(|i| (i % 251) as u8).collect();
         let seen = flash_all(&image, &slots).unwrap();
         for slot in &slots {
