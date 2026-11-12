@@ -300,3 +300,88 @@ adb shell 'dmesg | grep -iE "skyward|wpa_supplicant|qca|cnss" | tail -40'
 adb shell 'ps -A | grep -E "wpa_supplicant"'
 adb shell 'ls -la /skyward/run/supplicant/sockets/'
 ```
+
+---
+
+## 7. 装 OS3.0.5.0 为什么失败（2026-11-12）
+
+界面文案是"写入分区失败，错误代码 7"，但 7 是 `ErrorCode::kInstallDeviceOpenError`：
+update_engine 在**读 payload 之前**就中止了，一个字节都没写进 super。四层原因，
+每层都在下一层暴露出来：
+
+### 7.1 `/metadata/ota/snapshots` 不存在
+
+```
+snapshot.cpp:2663 Unable to write SnapshotStatus to /metadata/ota/snapshots/odm_a:
+                 No such file or directory
+... PrepareSnapshotPartitionsForUpdate failed in recovery.
+    Attempt to overwrite existing partitions if possible
+snapshot.cpp:1848 opendir failed: /metadata/ota/snapshots
+snapshot.cpp:519  snapshot_->CancelUpdate() failed.
+delta_performer.cc(819) Unable to initialize partition metadata for slot A
+```
+
+`/metadata/ota` 和 `/metadata/ota/snapshots` 是**已安装系统的 init.rc** 在
+post-fs 建的（`mkdir /metadata/ota 0700 root system`、
+`mkdir /metadata/ota/snapshots 0700 root system`；stock recovery 的 init.rc
+里没有这两行）。本机 metadata 被重建后系统没跑过那段 init，`ota` 只有
+update_engine 自己建的（0750），`snapshots` 谁也没建。手工补上后本层通过。
+
+### 7.2 `UeventdStop` 把 update_engine 锁死
+
+`DeviceMapper::CreateDevice()` 创建 dm 设备后等
+`/dev/block/mapper/by-uuid/<uuid>`（`fs_mgr/libdm/dm.cpp`），而 libsnapshot
+给 COW 设备传的 `timeout_ms` 是 `milliseconds::max()`。这个链接**只有
+ueventd** 会建；Skyward 的 `DmNodeWatch` 只建 `/dev/block/dm-N`。于是：
+
+```
+15:06:47  Successfully unmapped snapshot odm_a     ← 之后 4.5 分钟零日志、零 I/O
+          /proc/1645/wchan = __arm64_sys_nanosleep
+15:11:23  kill -CONT <ueventd>                     ← ueventd 从 T 变 S
+15:11:26  Mapped COW device for odm_a at /dev/block/dm-0   ← 同一秒继续
+```
+
+### 7.3 dm minor 复用时的节点竞态
+
+ueventd 不再被停之后，仍然失败在同一个 minor 上：
+
+```
+Mapped product_a-cow-img to 254:0
+Mapped COW device for product_a at /dev/block/dm-1
+Created logical partition system_a-cow-img on device /dev/block/dm-0
+Can't open COW device: /dev/block/dm-0: No such file or directory
+```
+
+dm-0 在一秒内被复用三次（odm_a-cow → product_a-cow-img → system_a-cow-img）。
+`prime_device_mapper` 预留的 64 个节点会被 ueventd 的删除事件 unlink 掉，
+而 `DmNodeWatch` 只在 `/sys/block` 收到 inotify 事件时补节点，补不上
+"删掉 → 引擎立刻 open" 这个窗口。
+
+### 7.4 失败后清理也失败，错误统一成 7
+
+```
+image_manager.cpp:277 Cannot remove images backed by /data in recovery   (×6)
+snapshot.cpp:258      Could not remove all snapshots
+snapshot.cpp:519      snapshot_->CancelUpdate() failed.
+```
+
+recovery 里 libsnapshot 拒绝删除 `/data` 上的 COW 镜像，`CancelUpdate()`
+必然失败，于是任何一层失败都被报成 `kInstallDeviceOpenError`。
+`/data/gsi/ota/` 会留下 6.2GB 镜像（下次运行会 truncating 复用）。
+
+### 7.5 本机的空间事实
+
+super 共 9,663,676,416 B，已分配 8,138,547,200 B，给 COW 只剩 1,525,129,216 B；
+全量包 6.4GB 的 COW 必然溢出到 `/data`（product 的 COW 就分成了
+1.48GB 在 super + 3.23GB 在 /data）。这也是上面 7.4 必然发生的原因。
+
+### 7.6 备选修复（未验证）
+
+1. 不预建节点，交给 ueventd：`target/skyward-marble-noprime.img`
+   （去掉了 `prime_device_mapper()`，保留 watcher）。
+2. 在 ramdisk 的 `prop.default` 里把 `ro.virtual_ab.enabled` 置 false：
+   `update_engine_sideload` 的字符串里确实有 `ro.virtual_ab.enabled`，
+   关掉后引擎走直接覆盖写（没有 COW 镜像、没有 minor 复用）。
+   落点：`skyward-pack` 加 `--prop name=value`（`Ramdisk::replace` 已有）。
+3. 结论：本机全量包走 recovery + 快照这条路径目前不可靠，先改用官方
+   fastboot 包线刷。
