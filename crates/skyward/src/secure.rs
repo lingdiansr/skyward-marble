@@ -237,10 +237,17 @@ pub fn publish_descriptions(wanted: &[String], files: &[String]) -> Result<usize
     let mut take = |from: &Path, text: &str| -> Result<()> {
         let name = from.file_name().with_context(|| format!("{} names no file", from.display()))?;
         let to = into.join(name);
-        fs::write(&to, as_framework(text)).with_context(|| format!("copy {}", from.display()))?;
+        let text = as_framework(text);
+        // The directory reads these once and keeps to them. A description
+        // already there and unchanged is not written again, so a recovery
+        // that starts again does not restart the directory for nothing.
+        let unchanged = matches!(fs::read_to_string(&to), Ok(old) if old == text);
+        if !unchanged {
+            fs::write(&to, &text).with_context(|| format!("copy {}", from.display()))?;
+            copied += 1;
+        }
         fs::set_permissions(&to, std::os::unix::fs::PermissionsExt::from_mode(0o644))
             .with_context(|| format!("let every user read {}", to.display()))?;
-        copied += 1;
         Ok(())
     };
     for dir in DESCRIPTIONS {
@@ -283,6 +290,14 @@ pub fn publish_descriptions(wanted: &[String], files: &[String]) -> Result<usize
         // installed system's init does whenever its directory restarts.
         let registered = registered()?;
         let was = directory_running();
+        // The recovery's own directory is an init service that outlives a
+        // recovery process. A restart through init waits out the pause init
+        // keeps between two starts; stopping it first does not.
+        if skyward_sys::prop(&format!("init.svc.{RECOVERY_DIRECTORY_SERVICE}")).as_deref() == Some("running") {
+            skyward_sys::set_prop("ctl.stop", RECOVERY_DIRECTORY_SERVICE)
+                .with_context(|| format!("have init stop {RECOVERY_DIRECTORY_SERVICE}"))?;
+            skyward_sys::wait_prop(&format!("init.svc.{RECOVERY_DIRECTORY_SERVICE}"), "stopped", STOP_TIMEOUT)?;
+        }
         let (action, service) = if skyward_sys::prop(&format!("init.svc.{DIRECTORY_SERVICE}")).is_some() {
             ("ctl.restart", DIRECTORY_SERVICE)
         } else {
