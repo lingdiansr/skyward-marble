@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use skyward_config::{ramdisk, DeviceConfig, Service};
+use skyward_config::{ramdisk, DeviceConfig};
+#[cfg(target_os = "android")]
+use skyward_config::Service;
 use skyward_sys::{bcb, Power};
 use skyward_vab::SnapshotState;
 use std::path::{Path, PathBuf};
@@ -719,6 +721,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
 /// Where the installed system keeps the programs of its platform. Which of
 /// its partitions holds a program differs between builds: the hardware
 /// service directory is in system_ext on some and in system on others.
+#[cfg(target_os = "android")]
 const INSTALLED_PROGRAMS: [&str; 3] = ["/mnt/system/system/bin", "/mnt/system_ext/bin", "/mnt/system/bin"];
 
 /// Put a service's program where the installed system keeps it. The path a
