@@ -8,8 +8,10 @@ use abootimg_oxide::{Header, VendorHeader};
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 const BOOT_MAGIC: &[u8] = b"ANDROID!";
@@ -205,6 +207,7 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
     let mut outs = Vec::with_capacity(devices.len());
     for path in devices {
         let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        make_writable(&f, path)?;
         let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
         f.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", path.display()))?;
         outs.push((path, f, size));
@@ -258,6 +261,22 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
             progress(done, total);
         }
         ensure!(back.finalize() == written, "{} reads back different from what was written", path.display());
+    }
+    Ok(())
+}
+
+/// The kernel may have marked a partition read-only while the update it
+/// belongs to was applied; a write then fails with `EPERM`. Clearing
+/// `BLKROSET` turns the device writable again. Regular files, which the
+/// tests write, are not block devices and are left alone.
+fn make_writable(f: &File, path: &Path) -> Result<()> {
+    if !f.metadata().with_context(|| format!("look at {}", path.display()))?.file_type().is_block_device() {
+        return Ok(());
+    }
+    // `_IO(0x12, 93)`, `BLKROSET`: the flag is written through the argument.
+    let writable: libc::c_int = 0;
+    if unsafe { libc::ioctl(f.as_raw_fd(), 0x125d, &writable) } != 0 {
+        return Err(io::Error::last_os_error()).with_context(|| format!("make {} writable", path.display()));
     }
     Ok(())
 }
