@@ -1363,6 +1363,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // The WLAN, on a phone whose driver the recovery brings up; it starts
     // off. Without the bundle of the vendor interface's libraries the
     // supplicant does not start, and the WLAN page says why.
+    let mut preheat = None;
     let wlan = match &cfg.wlan {
         Some(w) => {
             app.state.wlan = Some(Wlan::default());
@@ -1371,6 +1372,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
             });
+            preheat = Some((w.clone(), modules.clone()));
             Some(wlan::Worker::start(w.clone(), modules, libraries, servers.clone())?)
         }
         None => None,
@@ -1460,6 +1462,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             app.set_fastboot(running, link);
             port_at = Instant::now();
         }
+        app.set_wlan_preparing(crate::wlan::preheating());
         let panel = app.panel(now);
         let mut shown = false;
         if panel.is_some() {
@@ -2609,6 +2612,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     }
                     // A port that something else has takes file transfer
                     // on, or leaves it, when it comes back to rest.
+                    Effect::WlanPreheat => {
+                        if let Some((cfg, modules)) = &preheat {
+                            wlan::preheat(cfg.clone(), modules.clone());
+                        }
+                    }
                     Effect::FileTransfer(on) => {
                         let rests = !fastboot && !sideloading;
                         match (on, transfer.take()) {

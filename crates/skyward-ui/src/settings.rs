@@ -49,6 +49,8 @@ pub struct Settings {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// The WLAN's options.
+    pub wlan: Wlan,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -68,6 +70,15 @@ pub struct Install {
     /// data partition with it. Offered only while the bootloader is
     /// unlocked.
     pub allow_downgrade: bool,
+}
+
+/// The WLAN's options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Wlan {
+    /// Load the driver and bring the chip up as the recovery starts, so
+    /// its first calibration happens before the WLAN is asked for.
+    pub preheat: bool,
 }
 
 /// What a backup takes and where it goes.
@@ -130,6 +141,7 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            wlan: Wlan { preheat: state.preheat_wlan },
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery, allow_downgrade: state.allow_downgrade },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -188,6 +200,7 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.preheat_wlan = self.wlan.preheat;
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.allow_downgrade = self.install.allow_downgrade;

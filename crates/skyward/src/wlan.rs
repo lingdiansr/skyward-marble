@@ -19,9 +19,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+/// One bring-up at a time: the early one the preheat makes and the one the
+/// pages ask for can both find the interface missing, and each would load
+/// the driver and start a calibration of its own.
+static BRING_UP: Mutex<()> = Mutex::new(());
+
+/// Whether the WLAN is being brought up before the pages ask for it.
+static PREHEATING: AtomicBool = AtomicBool::new(false);
 
 /// The first folder the firmware loader looks in that a recovery can
 /// write.
@@ -806,6 +814,7 @@ impl Station {
 /// Load the driver where its interface is not there yet, and bring the
 /// interface up.
 fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
+    let _one_at_a_time = BRING_UP.lock().unwrap_or_else(|e| e.into_inner());
     let net = Path::new("/sys/class/net").join(&cfg.interface);
     if !net.exists() {
         for file in &cfg.firmware {
@@ -830,6 +839,27 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         }
     }
     iface::set_up(&cfg.interface, true)
+}
+
+/// Bring the driver up and power the chip before the WLAN is asked for:
+/// the chip's cold boot calibration then happens while the pages are used,
+/// rather than when the WLAN is first turned on.
+pub fn preheat(cfg: Config, modules: Vec<PathBuf>) {
+    PREHEATING.store(true, Ordering::Relaxed);
+    let spawned = thread::Builder::new().name("wlan-preheat".into()).spawn(move || {
+        if let Err(e) = bring_up(&cfg, &modules) {
+            let _ = skyward_sys::kmsg(&format!("the WLAN was not brought up early: {e:#}"));
+        }
+        PREHEATING.store(false, Ordering::Relaxed);
+    });
+    if spawned.is_err() {
+        PREHEATING.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Whether the WLAN is being brought up before the pages ask for it.
+pub fn preheating() -> bool {
+    PREHEATING.load(Ordering::Relaxed)
 }
 
 /// Put a file the driver asks for where the firmware loader looks.

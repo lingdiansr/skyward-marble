@@ -647,6 +647,24 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
     for path in load_modules(cfg, &cfg.modules.load)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
     }
+    // Bring the WLAN up before the pages open, where the settings say so:
+    // the chip's cold boot calibration then runs while the recovery starts,
+    // rather than when the WLAN is first turned on.
+    if let Some(w) = &cfg.wlan {
+        let early = crate::settings::read()
+            .ok()
+            .and_then(|kept| kept.settings().map(|s| s.wlan.preheat))
+            .unwrap_or(false);
+        if early {
+            let modules = cfg
+                .modules
+                .sources
+                .iter()
+                .map(|s| skyward_modules::source_dir(s))
+                .collect::<Result<Vec<_>>>()?;
+            wlan::preheat(w.clone(), modules);
+        }
+    }
     if !cfg.owners.is_empty() {
         let handed = hand_over(&cfg.owners)?;
         skyward_sys::kmsg(&format!(

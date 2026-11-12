@@ -385,6 +385,19 @@ pub fn settings(cx: &Ctx) -> Frame {
         "When on, a computer can manage the files in internal storage, once it is decrypted.",
     ]);
     y = widgets::footnote(&mut c, t, f, usb.bottom, note);
+    y = widgets::section(&mut c, t, f, y, "WLAN");
+    let preload = widgets::list(&mut c, t, f, y, &[
+        Row::new(l.pick(["预加载 WLAN", "預載 WLAN", "Preload WLAN"]))
+            .icon(BLUE, Icon::Power)
+            .trail(Trail::Switch(s.preheat_wlan)),
+    ]);
+    out.extend(hits(&preload.rows, &[Action::Toggle(Switch::WlanPreheat)]));
+    let note = l.pick([
+        "开启后，recovery 启动时就会加载 WLAN 驱动并完成芯片的首次校准，第一次打开 WLAN 更快；芯片在此期间保持上电。",
+        "開啟後，recovery 啟動時就會載入 WLAN 驅動並完成晶片的首次校準，第一次開啟 WLAN 更快；晶片在此期間保持上電。",
+        "When on, the recovery loads the WLAN driver and runs the chip's first calibration as it starts, so the first opening is faster; the chip stays powered meanwhile.",
+    ]);
+    y = widgets::footnote(&mut c, t, f, preload.bottom, note);
     // An older system starts only on an unlocked bootloader, so the choice
     // is offered only there.
     let bootloader_unlocked = cx.info.boot.unlocked.unwrap_or(cx.info.boot.verified.as_deref() == Some("orange"));
@@ -2900,6 +2913,13 @@ pub fn wlan(cx: &Ctx) -> Frame {
     out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Wlan)]));
     let mut y = switch.bottom;
     match &w.power {
+        Power::Off if s.wlan_preparing => {
+            y = widgets::footnote(&mut c, t, f, y, l.pick([
+                "正在准备 WLAN（首次校准约 10 秒），完成后可直接打开。",
+                "正在準備 Wi-Fi（首次校準約 10 秒），完成後可直接開啟。",
+                "Preparing Wi-Fi (first calibration, about 10 seconds); it will be ready to turn on.",
+            ]))
+        }
         Power::Off => {
             let note = l.pick([
                 "开启后，可连接 WLAN 下载系统更新和 Skyward 新版本。",
@@ -2909,6 +2929,13 @@ pub fn wlan(cx: &Ctx) -> Frame {
             y = widgets::footnote(&mut c, t, f, y, note)
         }
         Power::Failed(why) => y = widgets::footnote(&mut c, t, f, y, &tr!(l, "无法开启 WLAN：{why}", "無法開啟 Wi-Fi：{why}", "Couldn't turn on Wi-Fi: {why}")),
+        Power::Starting if s.wlan_preparing => {
+            y = widgets::footnote(&mut c, t, f, y, l.pick([
+                "正在准备 WLAN（首次校准约 10 秒）",
+                "正在準備 Wi-Fi（首次校準約 10 秒）",
+                "Preparing Wi-Fi (first calibration, about 10 seconds)",
+            ]))
+        }
         Power::Starting => y = widgets::footnote(&mut c, t, f, y, l.pick(["正在开启 WLAN", "正在開啟 Wi-Fi", "Turning on Wi-Fi"])),
         Power::On => {
             let locked = |s: Security| !matches!(s, Security::Open | Security::Owe);

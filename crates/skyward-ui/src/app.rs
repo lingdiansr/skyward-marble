@@ -546,6 +546,8 @@ pub enum Switch {
     Vibrate,
     /// Offer internal storage to a computer over USB.
     FileTransfer,
+    /// Load the WLAN driver and bring the chip up as the recovery starts.
+    WlanPreheat,
     /// Compress a backup.
     Compress,
     /// Read a backup back once it is written.
@@ -1597,6 +1599,10 @@ pub struct State {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// Load the WLAN driver and bring the chip up as the recovery starts.
+    pub preheat_wlan: bool,
+    /// The WLAN is being brought up before it is asked for.
+    pub wlan_preparing: bool,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -1771,6 +1777,8 @@ impl Default for State {
             vibrate: true,
             vibration: SLIDER_START,
             file_transfer: true,
+            preheat_wlan: false,
+            wlan_preparing: false,
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,
@@ -1971,6 +1979,8 @@ pub enum Effect {
     Screenshot { storage: bool },
     /// Offer internal storage to a computer over USB, or stop.
     FileTransfer(bool),
+    /// Load the WLAN driver and bring the chip up before the WLAN is asked for.
+    WlanPreheat,
     /// Start receiving a package over USB.
     Sideload,
     /// Start installing the file at this path from the top of a place,
@@ -4713,6 +4723,14 @@ impl App {
         self.say(why, now);
     }
 
+    /// Say whether the WLAN is being brought up before it is asked for.
+    pub fn set_wlan_preparing(&mut self, on: bool) {
+        if self.state.wlan_preparing != on {
+            self.state.wlan_preparing = on;
+            self.refresh();
+        }
+    }
+
     fn say(&mut self, text: &str, now: u64) {
         self.toast = Some((text.to_string(), now + TOAST_MS));
         self.dirty = true;
@@ -5174,6 +5192,7 @@ impl App {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
+                    Switch::WlanPreheat => &mut self.state.preheat_wlan,
                     Switch::Compress => &mut self.state.compress,
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
@@ -5187,6 +5206,9 @@ impl App {
                 self.refresh();
                 if switch == Switch::FileTransfer {
                     return vec![Effect::FileTransfer(now_on)];
+                }
+                if switch == Switch::WlanPreheat && now_on {
+                    return vec![Effect::WlanPreheat];
                 }
             }
             Action::MountToggle(i) => {
