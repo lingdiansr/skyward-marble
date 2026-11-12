@@ -1015,7 +1015,7 @@ fn percent(share: f32) -> u32 {
 /// Where an update stands, and the share of its step done when known.
 fn update_stage(l: Lang, stage: Option<&Stage>) -> (String, Option<f32>) {
     match stage {
-        Some(Stage::Writing { done, total }) => {
+        Some(Stage::Writing { done, total, .. }) => {
             let s = share(*done, *total);
             let p = percent(s);
             (tr!(l, "第 1 步，共 3 步：写入新系统 {p}%", "第 1 步，共 3 步：寫入新系統 {p}%", "Step 1 of 3: writing the new system {p}%"), Some(s))
@@ -4056,7 +4056,14 @@ mod tests {
         assert_eq!(script_stage(l, Some(&Stage::Script { thousandths: 250 }), &said), ("- Flashing boot", Some(0.25)), "past a blank line");
         assert_eq!(script_stage(l, Some(&Stage::Reflashing { done: 1, total: 4 }), &said), ("正在重新刷入 Skyward", Some(0.25)));
         assert_eq!(update_stage(Lang::En, Some(&Stage::Reflashing { done: 3, total: 4 })), ("Flashing Skyward again".to_string(), Some(0.75)));
-        assert_eq!(update_stage(Lang::Hant, Some(&Stage::Writing { done: 1, total: 4 })).0, "第 1 步，共 3 步：寫入新系統 25%");
+        assert_eq!(
+            update_stage(
+                Lang::Hant,
+                Some(&Stage::Writing { done: 1, total: 4, partition: None, operations: None, rate: None })
+            )
+            .0,
+            "第 1 步，共 3 步：寫入新系統 25%"
+        );
     }
 
     #[test]

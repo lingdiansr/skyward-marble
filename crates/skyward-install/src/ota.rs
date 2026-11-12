@@ -46,6 +46,10 @@ pub enum Log {
     Overwriting,
     /// It started reading back the `index`th partition it wrote, from 0.
     Hashing { index: usize, partition: String },
+    /// The partition the payload is writing now.
+    Writing(String),
+    /// How many of its operations it has finished, of all.
+    Progress { operations: (u64, u64) },
 }
 
 pub fn log(line: &str) -> Option<Log> {
@@ -55,6 +59,18 @@ pub fn log(line: &str) -> Option<Log> {
     }
     if line.contains("Will overwrite existing partitions.") {
         return Some(Log::Overwriting);
+    }
+    if let Some(rest) = after(line, "Applying ") {
+        if let Some((_, rest)) = rest.split_once(" operations to partition \"") {
+            if let Some((name, _)) = rest.split_once('"') {
+                return Some(Log::Writing(name.to_string()));
+            }
+        }
+    }
+    if let Some(rest) = after(line, "Completed ") {
+        let (operations, _) = rest.split_once(" operations")?;
+        let (done, total) = operations.split_once('/')?;
+        return Some(Log::Progress { operations: (done.parse().ok()?, total.parse().ok()?) });
     }
     let rest = after(line, "Hashing partition ")?;
     let (index, rest) = rest.split_once(" (")?;
@@ -157,8 +173,15 @@ mod tests {
             log("[INFO:dynamic_partition_control_android.cc(1349)] Will overwrite existing partitions. Slot B may be unbootable until update finishes!"),
             Some(Log::Overwriting)
         );
+        assert_eq!(
+            log("[INFO:partition_writer.cc(307)] Applying 20 operations to partition \"odm\""),
+            Some(Log::Writing("odm".into()))
+        );
         assert_eq!(log("[INFO:delta_performer.cc(267)] PartitionInfo old odm sha256: 00 size: 4"), None);
-        assert_eq!(log("[INFO:delta_performer.cc(108)] Completed 10/400 operations (2%)"), None);
+        assert_eq!(
+            log("[INFO:delta_performer.cc(108)] Completed 10/400 operations (2%)"),
+            Some(Log::Progress { operations: (10, 400) })
+        );
     }
 
     #[test]

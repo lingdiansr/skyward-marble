@@ -111,6 +111,8 @@ pub enum Event {
     Running,
     /// A line the install script shows.
     Print(String),
+    /// A line update_engine wrote, for the screen's scrolling log.
+    Log(String),
     Progress(Stage),
     /// The install wrote over this recovery in the recovery partitions,
     /// which the screen asked to keep: how writing it back went.
@@ -142,8 +144,9 @@ pub enum Reflash {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stage {
     /// update_engine writes the new system: the bytes of its payload read
-    /// so far.
-    Writing { done: u64, total: u64 },
+    /// so far, the partition it writes, the operations it has finished, and
+    /// the rate it reads at.
+    Writing { done: u64, total: u64, partition: Option<String>, operations: Option<(u64, u64)>, rate: Option<u64> },
     /// It reads back what it wrote, one partition after another.
     Verifying { index: usize, count: usize, partition: String },
     /// It runs the package's own last steps and switches slots.

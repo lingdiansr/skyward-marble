@@ -219,7 +219,7 @@ fn main() -> Result<()> {
             true,
             Install::Updating {
                 version: Some("OS4.0.5.0.XPACNXM".into()),
-                stage: Some(Stage::Writing { done: 2_934_000_000, total: 7_103_041_280 }),
+                stage: Some(Stage::Writing { done: 2_934_000_000, total: 7_103_041_280, partition: None, operations: None, rate: None }),
                 overwriting: true,
             },
         ),
@@ -427,7 +427,7 @@ fn main() -> Result<()> {
             from_storage(app, Install::Checking { size: 7_014_220_000, stage: None })
         }),
         ("20-install-storage-writing-dark", Screen::Installing, true, &|app| {
-            let stage = Some(Stage::Writing { done: 2_934_000_000, total: 7_014_220_000 });
+            let stage = Some(Stage::Writing { done: 2_934_000_000, total: 7_014_220_000, partition: None, operations: None, rate: None });
             from_storage(app, Install::Updating { version: Some("OS3.0.305.0.WMACNXM".into()), stage, overwriting: false })
         }),
         ("20-install-storage-refused", Screen::Installing, false, &|app| {

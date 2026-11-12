@@ -5049,6 +5049,7 @@ impl App {
                 }
                 shown.push(line);
             }
+            Event::Log(_) => {}
             Event::Progress(stage) => match install {
                 Install::Checking { stage: shown, .. }
                 | Install::Updating { stage: shown, .. }
@@ -8631,7 +8632,10 @@ mod tests {
         app.install(Event::Checking { size: 7_103_043_868 }, 0);
         app.install(Event::Installing { version: Some("OS3.0.306.0.WMACNXM".into()) }, 0);
         app.install(Event::Overwriting, 0);
-        app.install(Event::Progress(Stage::Writing { done: 1 << 30, total: 7 << 30 }), 0);
+        app.install(
+            Event::Progress(Stage::Writing { done: 1 << 30, total: 7 << 30, partition: None, operations: None, rate: None }),
+            0,
+        );
         assert!(matches!(app.state.install, Install::Updating { overwriting: true, stage: Some(_), .. }));
         let shown = app.frame(&f, &i).hits.len();
         assert_eq!(shown, 0, "nothing on the page to tap while installing");
