@@ -829,40 +829,14 @@ impl Drop for DmNodeWatch {
 }
 
 fn watch_dm_nodes(stop: &AtomicBool) {
-    let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
-    if fd < 0 {
-        while !stop.load(Ordering::Relaxed) {
-            let _ = make_dm_nodes();
-            thread::sleep(Duration::from_millis(1));
-        }
-        return;
-    }
-    let path = std::ffi::CString::new("/sys/block").expect("the sysfs block path holds no NUL");
-    let watched = unsafe {
-        libc::inotify_add_watch(
-            fd,
-            path.as_ptr(),
-            libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ATTRIB,
-        )
-    };
-    if watched < 0 {
-        while !stop.load(Ordering::Relaxed) {
-            let _ = make_dm_nodes();
-            thread::sleep(Duration::from_millis(1));
-        }
-        unsafe { libc::close(fd) };
-        return;
-    }
-    let mut buf = [0u8; 4096];
+    // Inotify does not report the devices sysfs makes under /sys/block, so
+    // the nodes and the mapper links are made again and again: the wait for
+    // one has no timeout, and a millisecond between looks is cheap beside
+    // the payload being written.
     while !stop.load(Ordering::Relaxed) {
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n > 0 {
-            let _ = make_dm_nodes();
-        } else {
-            thread::sleep(Duration::from_millis(1));
-        }
+        let _ = make_dm_nodes();
+        thread::sleep(Duration::from_millis(1));
     }
-    unsafe { libc::close(fd) };
 }
 
 fn make_dm_nodes() -> Result<()> {
