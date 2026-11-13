@@ -73,6 +73,11 @@ enum Cmd {
         /// not carry.
         #[arg(long)]
         extra: Option<PathBuf>,
+        /// A property to write into the recovery's prop.default, as
+        /// name=value; a later line of a property file overrides an earlier
+        /// one, so these override the stock build's.
+        #[arg(long = "prop", value_name = "NAME=VALUE")]
+        prop: Vec<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -126,6 +131,7 @@ fn main() -> Result<()> {
             mono,
             mono_license,
             extra,
+            prop,
             out,
         } => {
             let size = partition_size(&stock)?;
@@ -187,6 +193,7 @@ fn main() -> Result<()> {
             props.extend_from_slice(
                 b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n",
             );
+            let props = with_asked(props, &prop)?;
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
             let bytes = img.to_bytes()?;
@@ -381,6 +388,32 @@ fn without(props: &[u8], names: &[&str]) -> Vec<u8> {
     out
 }
 
+/// The stock property file with the properties the build asked for, each as
+/// name=value, replacing any line that names the same property: a `ro.`
+/// property takes the value it is first given, so the stock file's line
+/// would win over one written after it.
+fn with_asked(props: Vec<u8>, asked: &[String]) -> Result<Vec<u8>> {
+    let mut names = Vec::with_capacity(asked.len());
+    for line in asked {
+        let (name, _) = line
+            .split_once('=')
+            .with_context(|| format!("--prop takes name=value, not {line:?}"))?;
+        ensure!(!name.is_empty(), "--prop takes name=value, not {line:?}");
+        names.push(name);
+    }
+    let mut out = without(&props, &names);
+    for line in asked {
+        if !out.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(line.as_bytes());
+    }
+    if !out.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    Ok(out)
+}
+
 /// Write `bytes`, the image `img` makes, to `out`.
 fn write(out: &Path, img: &BootImage, bytes: &[u8]) -> Result<()> {
     std::fs::write(out, bytes).with_context(|| format!("write {}", out.display()))?;
@@ -524,5 +557,17 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         assert_eq!(out, b"a=1\n");
         let kept = without(b"a=1\nb=2", &BUILD_VERSION);
         assert_eq!(kept, b"a=1\nb=2");
+    }
+
+    #[test]
+    fn an_asked_property_replaces_the_line_the_stock_file_has() {
+        let stock = b"a=1\nro.virtual_ab.enabled=true\nb=2\n".to_vec();
+        let out = with_asked(stock, &["ro.virtual_ab.enabled=false".to_string()]).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("ro.virtual_ab.enabled").count(), 1, "one line, the asked one");
+        assert!(text.contains("ro.virtual_ab.enabled=false"));
+        assert!(text.contains("a=1") && text.contains("b=2"));
+        assert!(with_asked(b"a=1\n".to_vec(), &["noequals".into()]).is_err());
+        assert!(with_asked(b"a=1\n".to_vec(), &["=1".into()]).is_err());
     }
 }
