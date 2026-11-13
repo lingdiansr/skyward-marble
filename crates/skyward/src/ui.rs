@@ -528,6 +528,14 @@ fn look_for_drive(plugged: &mut Option<Plugged>, seen: &mut Option<String>) -> R
     }
     let Some(drive) = found else {
         *seen = None;
+        // A mount left at the place with no drive behind it reads as a
+        // drive that is not there: nothing the kernel lists now hangs on
+        // it, so what shows there is nothing the pages may take.
+        if skyward_block::mount::visible(Path::new(USB_DRIVE))?.is_some() {
+            skyward_block::mount::umount_detach(Path::new(USB_DRIVE))?;
+            skyward_sys::kmsg("a mount left at the USB drive's place is taken away")?;
+            return Ok(Some(None));
+        }
         return Ok(None);
     };
     if seen.as_deref() != Some(drive.disk.as_str()) {
