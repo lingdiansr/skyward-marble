@@ -21,6 +21,18 @@ const DEV_BLOCK: &str = "/dev/block";
 const FILESYSTEMS: [(&str, &str); 5] =
     [("vfat", "utf8"), ("exfat", "iocharset=utf8"), ("ntfs3", "iocharset=utf8"), ("ext4", ""), ("f2fs", "")];
 
+/// The entry of [`FILESYSTEMS`] the kernel would read NTFS by, where it had
+/// a driver to: the step the user-space one stands in at.
+const NTFS_AT: &str = "ntfs3";
+
+/// The program that reads NTFS in the phone's own user space, as Android's
+/// system reads such drives: the kernel these phones run has no NTFS driver
+/// at all, neither ntfs3 (5.15 and later) nor the old read-only one.
+const NTFS_HELPER: &str = "/system/bin/ntfs-3g";
+
+/// What the pages show as the filesystem of a drive [`NTFS_HELPER`] reads.
+pub const FUSE_FILESYSTEM: &str = "ntfs-3g";
+
 /// A USB drive as the kernel lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Drive {
@@ -122,8 +134,9 @@ fn present<T>(r: std::io::Result<T>) -> std::io::Result<Option<T>> {
 }
 
 /// Show `drive` read only at `at`: the first of its partitions, or its
-/// disk, that holds a filesystem the kernel reads. Gives the partition and
-/// the filesystem shown.
+/// disk, that holds a filesystem the kernel reads, or one that
+/// [`NTFS_HELPER`] reads in user space where the kernel's NTFS would be.
+/// Gives the partition and the filesystem shown.
 pub fn mount(drive: &Drive, at: &Path) -> Result<(String, &'static str)> {
     fs::create_dir_all(at).with_context(|| format!("create {}", at.display()))?;
     let mut tried = Vec::new();
@@ -135,9 +148,44 @@ pub fn mount(drive: &Drive, at: &Path) -> Result<(String, &'static str)> {
                 Ok(()) => return Ok((name.to_string(), filesystem)),
                 Err(e) => tried.push(format!("{name} as {filesystem}: {}", e.root_cause())),
             }
+            // Where the kernel's NTFS would be tried, the drive's own is:
+            // these phones' kernels carry no NTFS driver at all, and
+            // Android reads such volumes in user space. The filesystems
+            // after this one are still tried, so a drive holding something
+            // else is shown as what it holds.
+            if filesystem == NTFS_AT && Path::new(NTFS_HELPER).exists() {
+                let options = ["ro", "nosuid", "nodev", "noexec"];
+                match mount::mount_fuse(NTFS_HELPER, &device, at, &options) {
+                    Ok(()) => return Ok((name.to_string(), FUSE_FILESYSTEM)),
+                    Err(e) => tried.push(format!("{name} as {FUSE_FILESYSTEM}: {}", e.root_cause())),
+                }
+            }
         }
     }
     bail!("{} holds no filesystem the kernel reads: {}", drive.disk, tried.join("; "))
+}
+
+/// Make what is shown at `at` writable or read-only: a mount of the kernel's
+/// is remounted, and one a program serves in user space, which the kernel
+/// cannot remount, is taken down and made again the way it was with the
+/// other answer. Nothing else about it changes: a drive is still mounted
+/// with `nosuid,nodev,noexec`, and its files are still only its own.
+pub fn set_writable(at: &Path, writable: bool) -> Result<()> {
+    let Some(source) = mount::fuse_source(at)? else {
+        return mount::remount_writable(at, writable);
+    };
+    let mut options = vec!["nosuid", "nodev", "noexec"];
+    options.push(if writable { "rw" } else { "ro" });
+    mount::umount(at).with_context(|| format!("take down the mount on {}", at.display()))?;
+    match mount::mount_fuse(NTFS_HELPER, &source, at, &options) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Shown read only again, whatever was asked: a drive left
+            // unshown is worse than one that cannot be written.
+            let _ = mount::mount_fuse(NTFS_HELPER, &source, at, &["ro", "nosuid", "nodev", "noexec"]);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -460,11 +460,11 @@ fn find_backups(app: &mut App, storage: bool, usb: bool, now: u64) {
 fn delete_backup(place: Place, folder: &Path) -> Result<()> {
     let drive = Path::new(USB_DRIVE);
     if place == Place::UsbDrive {
-        skyward_block::mount::remount_writable(drive, true)?;
+        skyward_block::usb::set_writable(drive, true)?;
     }
     let deleted = fs::remove_dir_all(folder).with_context(|| format!("delete {}", folder.display()));
     if place == Place::UsbDrive {
-        let read_only = skyward_block::mount::remount_writable(drive, false);
+        let read_only = skyward_block::usb::set_writable(drive, false);
         deleted?;
         return read_only;
     }

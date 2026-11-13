@@ -400,7 +400,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
     }
     tell(Event::Plan(plan.iter().map(|(_, name, _, size)| (name.clone(), *size)).collect()));
     if let Some(at) = &t.remount {
-        mount::remount_writable(at, true)?;
+        skyward_block::usb::set_writable(at, true)?;
     }
     let folder = t.into.join(&t.stamp);
     let made = (|| -> Result<()> {
@@ -457,7 +457,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
         other => other,
     };
     if let Some(at) = &t.remount {
-        let read_only = mount::remount_writable(at, false);
+        let read_only = skyward_block::usb::set_writable(at, false);
         made?;
         read_only?;
     } else {

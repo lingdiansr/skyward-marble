@@ -209,6 +209,53 @@ mod sys {
         remount(target, flags, what)
     }
 
+    /// Mount `device` at `target` through `helper`, a program that reads the
+    /// filesystem in user space, as Android's system mounts NTFS: the
+    /// program opens `/dev/fuse` and hands the kernel the file of it that
+    /// answers for the mount. It then keeps running to serve the mount, and
+    /// the server it becomes outlives this call; what it says before that
+    /// is the mount's answer, and a nonzero one is a refusal.
+    pub fn mount_fuse(helper: &str, device: &Path, target: &Path, options: &[&str]) -> Result<()> {
+        use std::process::{Command, Stdio};
+        let asked = Command::new(helper)
+            .arg("-o")
+            .arg(options.join(","))
+            .arg(device)
+            .arg(target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("start {helper} for {} on {}", device.display(), target.display()))?;
+        let out = asked.wait_with_output().with_context(|| format!("wait for {helper}"))?;
+        if !out.status.success() {
+            let said = String::from_utf8_lossy(&out.stderr);
+            let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            let why = if last.is_empty() { "refused the mount".to_string() } else { last };
+            bail!("{helper} {}: {why}", target.display());
+        }
+        Ok(())
+    }
+
+    /// Whether the mount at `target` is one a program in user space serves:
+    /// the kernel's `fuse`, or `fuseblk` for a block device.
+    pub fn is_fuse(target: &Path) -> Result<bool> {
+        Ok(visible(target)?.is_some_and(|v| v.filesystem == "fuse" || v.filesystem == "fuseblk"))
+    }
+
+    /// What a mount at `target` reads from, when it is one a program in user
+    /// space serves: the device the program was given, which the kernel's
+    /// record of the mount keeps as its source. The program is not named
+    /// there, so taking the mount away and making it again is up to whoever
+    /// started it.
+    pub fn fuse_source(target: &Path) -> Result<Option<PathBuf>> {
+        if !is_fuse(target)? {
+            return Ok(None);
+        }
+        let shown = mounts()?.into_iter().rev().find(|m| m.mount_point == target);
+        Ok(shown.and_then(|m| m.mount_source).map(PathBuf::from))
+    }
+
     /// What is visibly mounted at `path`, the last of any mounts stacked there.
     pub fn visible(path: &Path) -> Result<Option<Visible>> {
         let Some(m) = mounts()?.into_iter().rev().find(|m| m.mount_point == path) else {
@@ -486,11 +533,23 @@ mod sys {
     pub fn holding(_device: (u32, u32)) -> Result<Vec<(i32, String)>> {
         bail!("this host does not look up which programs hold a filesystem")
     }
+    pub fn mount_fuse(_helper: &str, _device: &Path, _target: &Path, _options: &[&str]) -> Result<()> {
+        bail!("this host mounts nothing in user space")
+    }
+
+    pub fn is_fuse(_target: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
+    pub fn fuse_source(_target: &Path) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
 }
 
 pub use sys::{
-    bind, holders, holding, is_mount_point, loop_backed, mount, mount_ids, mount_ro, mount_ro_over, points_of,
-    remount_writable, umount, umount_detach, umount_detach_over, umount_over, visible,
+    bind, fuse_source, holders, holding, is_fuse, is_mount_point, loop_backed, mount, mount_fuse, mount_ids,
+    mount_ro, mount_ro_over, points_of, remount_writable, umount, umount_detach, umount_detach_over, umount_over,
+    visible,
 };
 
 #[cfg(test)]
