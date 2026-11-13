@@ -1442,6 +1442,17 @@ pub fn transfer_stopped(l: Lang, why: &str) -> String {
     tr!(l, "文件传输已停止：{why}", "檔案傳輸已停止：{why}", "File transfer stopped: {why}")
 }
 
+/// What an update that stopped left is taken away, and how much of it.
+pub fn cache_cleared(l: Lang, freed: u64) -> String {
+    let n = bytes(freed);
+    tr!(l, "已清理失败的更新缓存：{n}", "已清除失敗的更新快取：{n}", "Cleared the cache an update left: {n}")
+}
+
+/// What an update that stopped left stays, as the system says why.
+pub fn cache_clear_failed(l: Lang, why: &str) -> String {
+    tr!(l, "未能清理失败的更新缓存：{why}", "無法清除失敗的更新快取：{why}", "Couldn't clear the cache an update left: {why}")
+}
+
 /// Merging the update failed, as the system says why.
 pub fn merge_failed(l: Lang, why: &str) -> String {
     tr!(l, "未能合并更新：{why}", "無法合併更新：{why}", "Couldn't merge the update: {why}")

@@ -1,4 +1,5 @@
 use crate::backup;
+
 use crate::decrypt::{self, Decryptor};
 use crate::filework;
 use crate::haptics::Haptics;
@@ -17,7 +18,7 @@ use crate::wipe::{self, Eraser, Step};
 use crate::wlan;
 use anyhow::{anyhow, ensure, Context, Result};
 use skyward_block::fsck::Fixed;
-use skyward_block::{fstab, mount, probe};
+use skyward_block::{cache, fstab, mount, probe};
 use skyward_config::{DeviceConfig, Service};
 use skyward_crypto::data::{Closed, Opened};
 use skyward_install::asked::{self, Needs};
@@ -1133,6 +1134,8 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     // Opening the data partition, or a user's own files in it, under way,
     // and the users whose own files are still closed once it is open.
     let mut decryptor: Option<Decryptor> = None;
+    // What an update that stopped left, being taken away.
+    let mut cleaner: Option<cache::Cleaner> = None;
     let mut closed: Vec<Closed> = Vec::new();
     let mut arriving = Some(Incoming::Arrived);
     // The mount page shows the partitions as they are when it opens and
@@ -1542,6 +1545,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
             || backuper.is_some()
             || merger.is_some()
             || decryptor.is_some()
+            || cleaner.is_some()
             || part_worker.is_some()
             || checker.is_some()
             || downloader.is_some()
@@ -1590,6 +1594,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         }
         if let Some(d) = &decryptor {
             fds.push(d.fd());
+        }
+        if let Some(c) = &cleaner {
+            fds.push(c.fd());
         }
         if let Some(p) = &part_worker {
             fds.push(p.fd());
@@ -1640,6 +1647,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 let installed = matches!(ev, Told::Finished(Outcome::Installed { .. } | Outcome::Ran { .. }));
                 let wipe_after = matches!(ev, Told::Finished(Outcome::Installed { wipe: true, .. }));
                 let script_cache = matches!(ev, Told::Finished(Outcome::Ran { wipe_cache: true, .. }));
+                let failed = matches!(ev, Told::Finished(Outcome::Failed(_)));
                 // A second system installed is read for the pages to show.
                 if matches!(ev, Told::Done(Outcome::SystemInstalled { .. }) | Told::Finished(Outcome::SystemInstalled { .. })) {
                     systems_worker.as_mut().context("a second system went in on a phone that cannot hold one")?.send(systems::Task::Read);
@@ -1665,6 +1673,19 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 if finished {
                     installer = None;
                     sideloading = false;
+                    // An update that stopped leaves its images and the
+                    // state of the attempt on the data partition; they are
+                    // taken away, so the next attempt does not find
+                    // gigabytes it cannot use. They are only reachable while
+                    // internal storage is open.
+                    if failed && cleaner.is_none() {
+                        if mount::is_mount_point(Path::new(skyward_crypto::data::MOUNT))? {
+                            skyward_sys::kmsg("an update stopped; what it left is taken away")?;
+                            cleaner = Some(cache::Cleaner::start()?);
+                        } else {
+                            skyward_sys::kmsg("an update stopped with internal storage closed; what it left stays")?;
+                        }
+                    }
                     // A sideload or an update the system asked for is done
                     // with however it went, and so is rescue, once its page
                     // is left or the computer asks the phone to leave. A
@@ -2110,6 +2131,21 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         pending = Some(wanted);
                     }
                     _ => installer = Some(install_asked(cfg, &app, wanted)?),
+                }
+            }
+        }
+        if let Some(ended) = cleaner.as_ref().and_then(cache::Cleaner::ended) {
+            cleaner = None;
+            match ended {
+                Ok(freed) => {
+                    skyward_sys::kmsg(&format!("an update that stopped left {freed} bytes, now taken away"))?;
+                    if freed > 0 {
+                        app.report(&skyward_ui::fmt::cache_cleared(app.state.lang, freed), now);
+                    }
+                }
+                Err(why) => {
+                    skyward_sys::kmsg(&format!("what an update that stopped left is still there: {why}"))?;
+                    app.report(&skyward_ui::fmt::cache_clear_failed(app.state.lang, &why), now);
                 }
             }
         }
