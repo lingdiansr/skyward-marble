@@ -743,13 +743,59 @@ fn device_mapper_major() -> Result<libc::c_uint> {
     bail!("no device-mapper major in /proc/devices")
 }
 
-// ueventd keeps running while the update runs. It makes every node
-// update_engine waits for, and `DeviceMapper::CreateDevice` waits for the
-// `/dev/block/mapper` link that only ueventd makes; for the COW devices
-// libsnapshot gives that wait no timeout at all. Holding ueventd still
-// leaves that link missing and the update asleep for good — the watcher
-// below only covers the moment a minor is reused, when the old node is
-// gone and ueventd has not answered the new device yet.
+// ueventd is held while the update runs: it unlinks the node of a device as
+// soon as it hears it is gone, even as the next device takes the same minor,
+// and the update opens that node before it is made again. Held, it makes
+// none of the nodes or mapper links either, so the watcher below makes them.
+// `DeviceMapper::CreateDevice` waits for the `/dev/block/mapper` link, and
+// for a COW device that wait has no timeout.
+
+/// ueventd, held still while the update runs.
+struct UeventdHold {
+    pid: libc::pid_t,
+}
+
+impl UeventdHold {
+    fn hold() -> Result<Self> {
+        let pid = ueventd().context("find ueventd")?;
+        if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 {
+            return Err(io::Error::last_os_error()).with_context(|| format!("hold ueventd, pid {pid}"));
+        }
+        let _ = kmsg(&format!("install: ueventd, pid {pid}, held while the update runs"));
+        Ok(Self { pid })
+    }
+}
+
+impl Drop for UeventdHold {
+    fn drop(&mut self) {
+        if unsafe { libc::kill(self.pid, libc::SIGCONT) } != 0 {
+            let _ = kmsg(&format!(
+                "install: ueventd, pid {}, not let go: {}",
+                self.pid,
+                io::Error::last_os_error()
+            ));
+        }
+    }
+}
+
+/// The pid of ueventd, which init starts once and keeps running.
+fn ueventd() -> Result<libc::pid_t> {
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(pid) = name.parse::<libc::pid_t>() else {
+            continue;
+        };
+        if pid <= 1 {
+            continue;
+        }
+        if fs::read_to_string(entry.path().join("comm")).is_ok_and(|comm| comm.trim() == "ueventd") {
+            return Ok(pid);
+        }
+    }
+    bail!("no ueventd runs")
+}
 
 /// update_engine makes and removes device-mapper devices while it runs,
 /// and opens each node as soon as it makes the device. For a reused minor
@@ -838,27 +884,69 @@ fn make_dm_nodes() -> Result<()> {
             continue;
         };
         let path = format!("/dev/block/{name}");
-        if Path::new(&path).exists() {
-            continue;
-        }
-        let node = std::ffi::CString::new(path.clone()).context("the device name holds no NUL")?;
-        if unsafe {
-            libc::mknod(
-                node.as_ptr(),
-                libc::S_IFBLK | 0o600,
-                libc::makedev(major, minor),
-            )
-        } != 0
-        {
-            let e = io::Error::last_os_error();
-            if e.kind() != ErrorKind::AlreadyExists {
-                // A device can go away between reading it and making its
-                // node; the next event makes the node of its replacement.
-                continue;
+        if !Path::new(&path).exists() {
+            let node = std::ffi::CString::new(path.clone()).context("the device name holds no NUL")?;
+            if unsafe {
+                libc::mknod(
+                    node.as_ptr(),
+                    libc::S_IFBLK | 0o600,
+                    libc::makedev(major, minor),
+                )
+            } != 0
+            {
+                let e = io::Error::last_os_error();
+                if e.kind() != ErrorKind::AlreadyExists {
+                    // A device can go away between reading it and making its
+                    // node; the next event makes the node of its replacement.
+                    continue;
+                }
             }
+        }
+        // The mapper links ueventd would make: `DeviceMapper::CreateDevice`
+        // waits for the one it asked for before it opens the node, and a
+        // COW device's wait has no timeout.
+        if mapper_links(&entry.path(), name).is_err() {
+            // A device can go away while its links are made; the next event
+            // does the same for its replacement.
+            continue;
         }
     }
     Ok(())
+}
+
+/// Point the mapper names at `node`, the device `at` describes.
+fn mapper_links(at: &Path, node: &str) -> Result<()> {
+    let target = format!("/dev/block/{node}");
+    if let Ok(name) = fs::read_to_string(at.join("dm/name")) {
+        let name = name.trim();
+        if !name.is_empty() {
+            point(&Path::new("/dev/block/mapper").join(name), &target)?;
+        }
+    }
+    if let Ok(uuid) = fs::read_to_string(at.join("dm/uuid")) {
+        let uuid = uuid.trim();
+        if !uuid.is_empty() && uuid != "none" {
+            let dir = Path::new("/dev/block/mapper/by-uuid");
+            fs::create_dir_all(dir)?;
+            point(&dir.join(uuid), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Point the link `at` at `target`, making or replacing it.
+fn point(at: &Path, target: &str) -> Result<()> {
+    match fs::symlink_metadata(at) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() && fs::read_link(at).is_ok_and(|to| to == Path::new(target)) {
+                return Ok(());
+            }
+            fs::remove_file(at)?;
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("look at {}", at.display())),
+    }
+    symlink(target, at).with_context(|| format!("point {} at {target}", at.display()))
 }
 
 fn describe(package: &Package) -> String {
@@ -913,6 +1001,16 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
     detach_once(ctx)?;
+    // Held while the update runs, so that the node of a device it hears is
+    // gone cannot be taken away from the device that takes its minor; the
+    // watcher makes the nodes and the mapper links meanwhile.
+    let _ueventd = match UeventdHold::hold() {
+        Ok(held) => Some(held),
+        Err(e) => {
+            let _ = kmsg(&format!("install: ueventd not held: {e:#}"));
+            None
+        }
+    };
     prime_device_mapper().context("prepare the device-mapper nodes for update_engine")?;
     // update_engine mounts /metadata itself, as in the stock recovery, keeps
     // the update's state there, and unmounts it when done. The recovery
