@@ -32,6 +32,12 @@ unicode-width = "0.2.2"
 vt100 = "0.18.1"
 
 [dev-dependencies]
+# The panel's commits are handed to the kernel only on the phone; the test
+# that a commit carrying a mode is not handed over non-blocking builds the
+# flags here on the computer too.
+drm = "0.15.0"
+drm-ffi = "0.9.1"
+libc = { workspace = true }
 # The test that the typeface draws every text the pages write reads them
 # from the source.
 proc-macro2 = "1.0.107"

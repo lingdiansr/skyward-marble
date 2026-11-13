@@ -199,7 +199,7 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 pub mod kms {
     use super::*;
     use anyhow::{anyhow, Context};
@@ -475,6 +475,20 @@ pub mod kms {
         /// stopped.
         Resting,
         Off,
+    }
+
+    /// The flags a frame is committed with. A frame that only hands the
+    /// panel another buffer is a page flip, queued without waiting for it;
+    /// `settle` reads its event when the buffer is wanted again. A frame
+    /// that turns the display on is a modeset, which the kernel refuses to
+    /// run non-blocking (`EINVAL`), so that frame waits here.
+    fn commit_flags(power: Power) -> AtomicCommitFlags {
+        let mut flags = AtomicCommitFlags::PAGE_FLIP_EVENT;
+        match power {
+            Power::Off => flags |= AtomicCommitFlags::ALLOW_MODESET,
+            Power::On | Power::Resting => flags |= AtomicCommitFlags::NONBLOCK,
+        }
+        flags
     }
 
     pub struct KmsSurface {
@@ -880,7 +894,7 @@ pub mod kms {
             for &(plane, fb_prop) in &self.planes {
                 req.add_property(plane, fb_prop, property::Value::Framebuffer(Some(buf.fb)));
             }
-            let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
+            let flags = commit_flags(self.power);
             if self.power != Power::On {
                 // The panel runs again, and coming on from off it would
                 // otherwise rest again as it last did.
@@ -894,7 +908,6 @@ pub mod kms {
                 if let Some((id, setup)) = self.spr {
                     req.add_property(self.crtc, id, setup);
                 }
-                flags |= AtomicCommitFlags::ALLOW_MODESET;
             }
             self.settle()?;
             self.card.atomic_commit(flags, req).context(if self.power == Power::On { "flip" } else { "turn the display on" })?;
@@ -913,6 +926,22 @@ pub mod kms {
                 self.flipping = false;
             }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_frame_that_turns_the_display_on_is_not_committed_non_blocking() {
+            let on = commit_flags(Power::Off);
+            assert!(on.contains(AtomicCommitFlags::ALLOW_MODESET), "the commit that turns the display on carries a mode");
+            assert!(!on.contains(AtomicCommitFlags::NONBLOCK), "the kernel refuses a non-blocking commit that carries a mode");
+            let flip = commit_flags(Power::On);
+            assert!(flip.contains(AtomicCommitFlags::NONBLOCK), "a frame that only hands the panel another buffer does not wait");
+            assert!(!flip.contains(AtomicCommitFlags::ALLOW_MODESET));
+            assert!(commit_flags(Power::Resting).contains(AtomicCommitFlags::NONBLOCK));
         }
     }
 }
