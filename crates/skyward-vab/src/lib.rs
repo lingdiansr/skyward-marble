@@ -106,6 +106,18 @@ const OTA_DIR: &str = "/metadata/ota";
 const STATE: &str = "state";
 const SOURCE: &str = "snapshot-boot";
 
+/// The prefix of the device-mapper devices the recovery makes for its own
+/// mounts and snapshots. An update, and a system's first stage, make devices
+/// for the same partitions under the partitions' own names; were the recovery
+/// to use those names, the update would reuse the recovery's devices and take
+/// them apart under it, leaving its mounts without a device.
+pub const OWNED: &str = "skyward-";
+
+/// The device-mapper name the recovery gives partition `name`'s device.
+pub fn owned(name: &str) -> String {
+    format!("{OWNED}{name}")
+}
+
 /// libsnapshot's `SnapshotUpdateStatus` from snapshot.proto, every field of
 /// it, so that the state written back keeps all it held.
 #[derive(Clone, PartialEq, Message)]

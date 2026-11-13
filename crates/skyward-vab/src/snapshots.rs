@@ -5,7 +5,7 @@
 //! served by snapuserd, as compressed updates make them, are not read here.
 
 use crate::partitions::targets;
-use crate::{read_status, state_of, FailureCode, MergePhase, MergeStatus, Slot, UpdateState, UpdateStatus, OTA_DIR, SOURCE, STATE};
+use crate::{owned, read_status, state_of, FailureCode, MergePhase, MergeStatus, Slot, UpdateState, UpdateStatus, OTA_DIR, SOURCE, STATE};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use prost::Message;
 use skyward_block::{devnum, dm, BY_NAME};
@@ -435,19 +435,19 @@ fn map_image(name: &str) -> Result<PathBuf> {
     let md = skyward_lp::read_image(Path::new(IMAGES))?;
     let devices = md.block_devices.iter().map(|d| devnum(Path::new(BY_NAME).join(&d.partition_name))).collect::<Result<Vec<_>>>()?;
     let image = md.partition(name).with_context(|| format!("{IMAGES} records no {name}"))?;
-    dm::create(name, &targets(image, &devices), false)
+    dm::create(&owned(name), &targets(image, &devices), false)
 }
 
-/// Whether device-mapper device `name` is a kernel snapshot.
+/// Whether partition `name`'s kernel snapshot, as the recovery maps it, is.
 pub fn is_snapshot(name: &str) -> Result<bool> {
-    Ok(snapshot_target(name)?.is_some())
+    Ok(snapshot_target(&owned(name))?.is_some())
 }
 
 /// Undo [`map_snapshot`] where it was done: take away partition `name`'s
 /// snapshot, its copy-on-write devices and its base, those that are there.
 pub fn unmap_snapshot(name: &str) -> Result<()> {
-    for dev in [name.to_string(), format!("{name}-cow"), format!("{name}-cow-img"), format!("{name}-base"), format!("{name}-src")] {
-        remove_if_mapped(&dev)?;
+    for suffix in ["", "-cow", "-cow-img", "-base", "-src"] {
+        remove_if_mapped(&owned(&format!("{name}{suffix}")))?;
     }
     Ok(())
 }
@@ -456,8 +456,8 @@ pub fn unmap_snapshot(name: &str) -> Result<()> {
 /// libsnapshot deletes a snapshot in recovery: its status and its image
 /// stay for the system to delete.
 fn delete_snapshot(name: &str) -> Result<()> {
-    remove_if_mapped(&format!("{name}-cow"))?;
-    remove_if_mapped(&format!("{name}-cow-img"))
+    remove_if_mapped(&owned(&format!("{name}-cow")))?;
+    remove_if_mapped(&owned(&format!("{name}-cow-img")))
 }
 
 /// Map partition `p` of the slot through its snapshot `status`, as the
@@ -494,12 +494,12 @@ pub fn map_snapshot(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], p:
 
     let mut made: Vec<String> = Vec::new();
     let mapped = (|| -> Result<PathBuf> {
-        let base = format!("{}-base", p.name);
+        let base = owned(&format!("{}-base", p.name));
         let base_dev = dm::create(&base, &targets(p, devices), false)?;
         made.push(base);
-        let image = format!("{}-cow-img", p.name);
+        let image = owned(&format!("{}-cow-img", p.name));
         let image_dev = if status.cow_file_size > 0 {
-            let dev = map_image(&image)?;
+            let dev = map_image(&format!("{}-cow-img", p.name))?;
             made.push(image.clone());
             Some(dev)
         } else {
@@ -508,13 +508,14 @@ pub fn map_snapshot(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], p:
         let cow_dev = match (status.cow_partition_size, image_dev) {
             (0, Some(dev)) => dev,
             (_, image_dev) => {
-                let name = format!("{}-cow", p.name);
-                let part = md.partition(&name).with_context(|| format!("super holds no {name}"))?;
-                ensure!(md.groups[part.group].name == COW_GROUP, "{name} is not in super's {COW_GROUP} group");
+                let part_name = format!("{}-cow", p.name);
+                let part = md.partition(&part_name).with_context(|| format!("super holds no {part_name}"))?;
+                ensure!(md.groups[part.group].name == COW_GROUP, "{part_name} is not in super's {COW_GROUP} group");
                 let mut table = targets(part, devices);
                 if let Some(dev) = image_dev {
                     table.push(dm::Target::Linear { sectors: status.cow_file_size / sector, device: devnum(&dev)?, offset: 0 });
                 }
+                let name = owned(&part_name);
                 let dev = dm::create(&name, &table, false)?;
                 made.push(name);
                 dev
@@ -528,7 +529,7 @@ pub fn map_snapshot(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], p:
             merge,
             overflow: reports_overflow(kind)?,
         };
-        dm::create(&p.name, &[snapshot], false)
+        dm::create(&owned(&p.name), &[snapshot], false)
     })();
     if mapped.is_err() {
         for name in made.iter().rev() {
@@ -569,7 +570,7 @@ pub fn initiate(snaps: &Snapshots, current: Slot, md: &Metadata, tell: &dyn Fn(M
     ensure!(!update.using_snapuserd, "the update's snapshots are compressed and served by snapuserd, which this recovery does not run");
     let mut names = snaps.list()?;
     for name in names.iter().filter(|n| n.ends_with(current.suffix())) {
-        ensure!(dm::status(name)?.is_some(), "{name} is not mapped, and everything has to merge at once");
+        ensure!(dm::status(&owned(name))?.is_some(), "{name} is not mapped, and everything has to merge at once");
     }
     let mut kept = Vec::new();
     for name in names.drain(..) {
@@ -581,7 +582,7 @@ pub fn initiate(snaps: &Snapshots, current: Slot, md: &Metadata, tell: &dyn Fn(M
     let mut initial = Usage::default();
     let mut first = Vec::new();
     for name in &kept {
-        let (_, usage) = snapshot_target(name)?.with_context(|| format!("{name} is not a snapshot"))?;
+        let (_, usage) = snapshot_target(&owned(name))?.with_context(|| format!("{name} is not a snapshot"))?;
         let usage = usage.map_err(|why| anyhow!("{name}: {why}"))?;
         initial.allocated += usage.allocated;
         initial.total += usage.total;
@@ -623,7 +624,7 @@ pub fn initiate(snaps: &Snapshots, current: Slot, md: &Metadata, tell: &dyn Fn(M
 /// over the same base and copy-on-write devices, and its status says so.
 fn switch_to_merge(snaps: &Snapshots, name: &str) -> Result<(), FailureCode> {
     let mut status = snaps.status(name).map_err(|_| FailureCode::ReadStatus)?;
-    let lines = dm::table(name).map_err(|_| FailureCode::GetTableInfo)?;
+    let lines = dm::table(&owned(name)).map_err(|_| FailureCode::GetTableInfo)?;
     let [line] = lines.as_slice() else { return Err(FailureCode::UnknownTable) };
     if line.kind != "snapshot" {
         return Err(FailureCode::UnknownTable);
@@ -633,9 +634,9 @@ fn switch_to_merge(snaps: &Snapshots, name: &str) -> Result<(), FailureCode> {
     let (base, cow) = (parse_device(base).map_err(|_| FailureCode::GetTableParams)?, parse_device(cow).map_err(|_| FailureCode::GetTableParams)?);
     let overflow = reports_overflow("snapshot-merge").map_err(|_| FailureCode::ActivateNewTable)?;
     let merging = dm::Target::Snapshot { sectors: line.sectors, base, cow, merge: true, overflow };
-    dm::reload(name, &[merging], false).map_err(|_| FailureCode::ActivateNewTable)?;
+    dm::reload(&owned(name), &[merging], false).map_err(|_| FailureCode::ActivateNewTable)?;
     status.state = PartState::Merging as i32;
-    if let Ok(Some((_, Ok(usage)))) = snapshot_target(name) {
+    if let Ok(Some((_, Ok(usage)))) = snapshot_target(&owned(name)) {
         status.sectors_allocated = usage.allocated;
         status.metadata_sectors = usage.metadata;
     }
@@ -724,7 +725,7 @@ enum Target {
 fn check_target(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], name: &str, update: &UpdateStatus) -> Result<Target> {
     let Ok(mut status) = snaps.status(name) else { return Ok(Target::Failed(FailureCode::ReadStatus)) };
     let state = status.part_state()?;
-    let Some((merging, usage)) = snapshot_target(name)? else {
+    let Some((merging, usage)) = snapshot_target(&owned(name))? else {
         if placed(md, name) != Placed::Updated {
             delete_snapshot(name)?;
             return Ok(Target::Cancelled);
@@ -766,7 +767,7 @@ fn check_target(snaps: &Snapshots, md: &Metadata, devices: &[(u32, u32)], name: 
 /// straight over super again, and its base and copy-on-write devices taken
 /// away.
 fn merged(md: &Metadata, devices: &[(u32, u32)], name: &str, status: &SnapshotStatus) -> Result<()> {
-    if let Some((merging, usage)) = snapshot_target(name)? {
+    if let Some((merging, usage)) = snapshot_target(&owned(name))? {
         ensure!(merging, "{name} is a snapshot that is not merging");
         let usage = usage.map_err(|why| anyhow!("{name}: {why}"))?;
         ensure!(usage.allocated == usage.metadata, "{name} has more to merge");
@@ -780,9 +781,9 @@ fn merged(md: &Metadata, devices: &[(u32, u32)], name: &str, status: &SnapshotSt
 fn collapse(md: &Metadata, devices: &[(u32, u32)], name: &str, status: &SnapshotStatus) -> Result<()> {
     ensure!(status.snapshot_size.is_multiple_of(SECTOR_SIZE), "{name}'s snapshot is {} bytes, not whole sectors", status.snapshot_size);
     let p = md.partition(name).with_context(|| format!("super holds no {name}"))?;
-    dm::reload(name, &targets(p, devices), true)?;
-    remove_if_mapped(&format!("{name}-base"))?;
-    remove_if_mapped(&format!("{name}-src"))
+    dm::reload(&owned(name), &targets(p, devices), true)?;
+    remove_if_mapped(&owned(&format!("{name}-base")))?;
+    remove_if_mapped(&owned(&format!("{name}-src")))
 }
 
 /// Go on to merge the snapshots of the second phase, those of the first all

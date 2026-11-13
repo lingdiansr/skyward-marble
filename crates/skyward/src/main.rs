@@ -1234,10 +1234,10 @@ fn update() -> Result<()> {
             s.old_partition_size
         );
         for dev in [
-            name.clone(),
-            format!("{name}-base"),
-            format!("{name}-cow"),
-            format!("{name}-cow-img"),
+            skyward_vab::owned(&name),
+            skyward_vab::owned(&format!("{name}-base")),
+            skyward_vab::owned(&format!("{name}-cow")),
+            skyward_vab::owned(&format!("{name}-cow-img")),
         ] {
             if skyward_block::dm::status(&dev)?.is_some() {
                 for line in skyward_block::dm::table_status(&dev)? {

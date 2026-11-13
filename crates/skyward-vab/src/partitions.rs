@@ -1,5 +1,5 @@
 use crate::snapshots::{self, Merge, SnapshotStatus, Snapshots};
-use crate::{snapshot_state, MergeStatus, Slot, SnapshotState, METADATA};
+use crate::{owned, snapshot_state, MergeStatus, Slot, SnapshotState, METADATA, OWNED};
 use anyhow::{ensure, Context, Result};
 use skyward_block::{devnum, dm, mount, BY_NAME};
 use skyward_lp::{Extent, Metadata, Partition, ATTR_DISABLED};
@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 /// A logical partition of super, mapped and mounted read-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mounted {
-    /// The name in super, such as vendor_dlkm_b; also the device-mapper name.
+    /// The name in super, such as vendor_dlkm_b. Its device-mapper device is
+    /// named `skyward-` and this, apart from the like-named devices an update
+    /// or a system's first stage makes.
     pub partition: String,
     pub device: PathBuf,
     pub mount_point: PathBuf,
@@ -69,7 +71,7 @@ fn bytes(p: &Partition) -> u64 {
 /// Map partition `p` from super read-only with device-mapper and mount it
 /// over its point. A device that does not mount is removed again.
 fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mounted> {
-    let device = dm::create(&p.name, &targets(p, devices), true)?;
+    let device = dm::create(&owned(&p.name), &targets(p, devices), true)?;
     let mount_point = mount_point(base(p, slot));
     let mounted = (|| -> Result<String> {
         fs::create_dir_all(&mount_point).with_context(|| format!("create {}", mount_point.display()))?;
@@ -77,7 +79,7 @@ fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mo
     })();
     match mounted {
         Ok(filesystem) => Ok(Mounted { partition: p.name.clone(), device, mount_point, filesystem }),
-        Err(e) => Err(match dm::remove(&p.name) {
+        Err(e) => Err(match dm::remove(&owned(&p.name)) {
             Ok(()) => e,
             Err(r) => e.context(format!("removing {} afterwards failed too: {r:#}", p.name)),
         }),
@@ -323,7 +325,7 @@ pub fn mount_one(slot: Slot, base_name: &str) -> Result<Mounted> {
         _ => None,
     };
     match status {
-        Some(_) if dm::status(&name)?.is_some() => mount_mapped(p, Path::new("/dev/block").join(dm_node(&name)?), slot),
+        Some(_) if dm::status(&owned(&name))?.is_some() => mount_mapped(p, Path::new("/dev/block").join(dm_node(&owned(&name))?), slot),
         Some((s, status)) => mount_snapshot(s, &md, &devices, p, &status, slot),
         None => map_and_mount(p, &devices, slot),
     }
@@ -340,7 +342,7 @@ fn dm_node(name: &str) -> Result<String> {
 /// it reads through a snapshot, the snapshot's own devices too. A partition
 /// that is not mapped is left as it is.
 fn unmap(name: &str, point: &Path) -> Result<()> {
-    let Some(dev) = dm::status(name)? else { return Ok(()) };
+    let Some(dev) = dm::status(&owned(name))? else { return Ok(()) };
     if mount::visible(point)?.is_some_and(|v| v.device == dev) {
         mount::umount_over(point)?;
     }
@@ -357,7 +359,7 @@ pub fn unmount_one(slot: Slot, base_name: &str) -> Result<()> {
     if !snapshots::is_snapshot(&name)? {
         return unmap(&name, &point);
     }
-    let dev = dm::status(&name)?.with_context(|| format!("{name} is not mapped"))?;
+    let dev = dm::status(&owned(&name))?.with_context(|| format!("{name} is not mapped"))?;
     if mount::visible(&point)?.is_some_and(|v| v.device == dev) {
         mount::umount_over(&point)?;
     }
@@ -375,6 +377,10 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
         let name_file = entry.path().join("dm/name");
         let name = fs::read_to_string(&name_file).with_context(|| format!("read {}", name_file.display()))?;
         let name = name.trim();
+        // The recovery's own devices only: an update's and a system's are
+        // named after the partition itself, and are not the recovery's to
+        // take apart.
+        let Some(name) = name.strip_prefix(OWNED) else { continue };
         let Some(base) = name.strip_suffix(slot.suffix()) else { continue };
         let device = Path::new("/dev/block").join(&node);
         let mount_point = mount_point(base);
