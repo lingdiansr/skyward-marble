@@ -1678,13 +1678,13 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // taken away, so the next attempt does not find
                     // gigabytes it cannot use. They are only reachable while
                     // internal storage is open.
+                    // What it left on the metadata partition keeps the next
+                    // update from starting, so it goes even where internal
+                    // storage is closed; the images on that partition stay
+                    // until it opens.
                     if failed && cleaner.is_none() {
-                        if mount::is_mount_point(Path::new(skyward_crypto::data::MOUNT))? {
-                            skyward_sys::kmsg("an update stopped; what it left is taken away")?;
-                            cleaner = Some(cache::Cleaner::start()?);
-                        } else {
-                            skyward_sys::kmsg("an update stopped with internal storage closed; what it left stays")?;
-                        }
+                        skyward_sys::kmsg("an update stopped; what it left is taken away")?;
+                        cleaner = Some(cache::Cleaner::start()?);
                     }
                     // A sideload or an update the system asked for is done
                     // with however it went, and so is rescue, once its page
@@ -2137,8 +2137,11 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         if let Some(ended) = cleaner.as_ref().and_then(cache::Cleaner::ended) {
             cleaner = None;
             match ended {
-                Ok(freed) => {
-                    skyward_sys::kmsg(&format!("an update that stopped left {freed} bytes, now taken away"))?;
+                Ok((freed, open)) => {
+                    skyward_sys::kmsg(&format!(
+                        "an update that stopped left {freed} bytes, now taken away{}",
+                        if open { "" } else { "; the images on the data partition stay while it is closed" }
+                    ))?;
                     if freed > 0 {
                         app.report(&skyward_ui::fmt::cache_cleared(app.state.lang, freed), now);
                     }

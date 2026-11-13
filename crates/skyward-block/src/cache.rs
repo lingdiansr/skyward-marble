@@ -3,7 +3,7 @@
 //! snapshot machinery keeps, and the logs of it. The folders stay, where
 //! the next update looks for them; what is in them goes.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use crate::mount;
 use std::fs;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -11,19 +11,21 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
-/// The folders an update that stopped writes in. Each is kept and what is
-/// in it taken away.
-const FOLDERS: [&str; 6] = [
+/// The folders an update that stopped writes in on the data partition. Each
+/// is kept and what is in it taken away, when the partition is open.
+const DATA_FOLDERS: [&str; 5] = [
     "/data/gsi/ota",
     "/data/ota",
     "/data/ota_package",
     "/data/misc/update_engine/prefs",
     "/data/misc/update_engine_log",
-    "/metadata/ota/snapshots",
 ];
 
-/// The files it leaves outright.
-const FILES: [&str; 1] = ["/metadata/ota/state"];
+/// The folders and files it leaves on the metadata partition. They keep the
+/// next update from starting even where the data partition is closed, so
+/// they go whatever else does.
+const METADATA_FOLDERS: [&str; 1] = ["/metadata/ota/snapshots"];
+const METADATA_FILES: [&str; 1] = ["/metadata/ota/state"];
 
 /// Where the data partition is mounted; what an update writes lives there.
 const DATA: &str = "/data";
@@ -33,23 +35,28 @@ const DATA: &str = "/data";
 const METADATA: &str = "/metadata";
 
 /// Take away what an update that stopped left, and say how many bytes that
-/// was. Internal storage has to be open: what it wrote lives there.
-pub fn clear() -> Result<u64> {
-    if !mount::is_mount_point(Path::new(DATA))? {
-        bail!("internal storage is not open");
-    }
+/// was and whether the data partition was open: the images it wrote there
+/// stay while it is closed, but the snapshot state goes either way, so the
+/// next update starts.
+pub fn clear() -> Result<(u64, bool)> {
+    let mut freed = 0;
     let metadata = Path::new(METADATA);
     if mount::is_mount_point(metadata)? {
         mount::remount_writable(metadata, true)?;
+        for folder in METADATA_FOLDERS {
+            freed += empty(Path::new(folder))?;
+        }
+        for file in METADATA_FILES {
+            freed += take(Path::new(file))?;
+        }
     }
-    let mut freed = 0;
-    for folder in FOLDERS {
-        freed += empty(Path::new(folder))?;
+    let open = mount::is_mount_point(Path::new(DATA))?;
+    if open {
+        for folder in DATA_FOLDERS {
+            freed += empty(Path::new(folder))?;
+        }
     }
-    for file in FILES {
-        freed += take(Path::new(file))?;
-    }
-    Ok(freed)
+    Ok((freed, open))
 }
 
 /// Take away what is in `folder`, which stays, and say how many bytes that
@@ -104,7 +111,7 @@ fn size(path: &Path) -> Result<u64> {
 /// an update that wrote gigabytes on the data partition takes a while to
 /// take away.
 pub struct Cleaner {
-    ended: Receiver<Result<u64, String>>,
+    ended: Receiver<Result<(u64, bool), String>>,
     wake: OwnedFd,
     thread: Option<JoinHandle<()>>,
 }
@@ -132,7 +139,7 @@ impl Cleaner {
     }
 
     /// How the clearing ended, once it has.
-    pub fn ended(&self) -> Option<Result<u64, String>> {
+    pub fn ended(&self) -> Option<Result<(u64, bool), String>> {
         let mut drain = [0u8; 8];
         while unsafe { libc::read(self.wake.as_raw_fd(), drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
         self.ended.try_recv().ok()
