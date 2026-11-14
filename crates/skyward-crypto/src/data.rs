@@ -213,7 +213,18 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
     let mut closed = Vec::new();
     let mut owner = Note::default();
     for user in open_users(service)? {
-        let protector = protector(user)?;
+        // No protector is a user who set no screen lock: the phone keeps no
+        // blob for one, and their own files open with nothing typed.
+        let protector = match protector(user)? {
+            Some(protector) => protector,
+            None => {
+                let note = open_user_files(service, user, None, None)?;
+                if user == OWNER {
+                    owner = note;
+                }
+                continue;
+            }
+        };
         match protector.lock {
             None => {
                 let note = open_user_files(service, user, None, None)?;
@@ -332,10 +343,22 @@ const PROTECTORS: &str = "/data/system_de";
 /// credential before can still be used. Which of them the user's current
 /// credential opens is the phone's own business, and it writes that down,
 /// so this reads it rather than guess.
-fn protector(user: u32) -> Result<crate::user::Protector> {
-    let dir = blobs(user);
+fn protector(user: u32) -> Result<Option<crate::user::Protector>> {
+    protector_in(&blobs(user), user)
+}
+
+/// [`protector`] for the folder a user's blobs are kept in.
+fn protector_in(dir: &Path, user: u32) -> Result<Option<crate::user::Protector>> {
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        // A user who has set no screen lock has no synthetic password, and
+        // the phone keeps no blob for one: nothing is behind a credential,
+        // and their own files open with nothing typed.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
+    };
+    for entry in entries {
         let path = entry.with_context(|| format!("read {}", dir.display()))?.path();
         if path.extension().is_some_and(|e| e == "spblob") {
             if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
@@ -382,12 +405,12 @@ fn protector(user: u32) -> Result<crate::user::Protector> {
             std::fs::read(dir.join(format!("{id}.secdis"))).with_context(|| format!("read what the blob in {} is bound to", dir.display()))?,
         ),
     };
-    Ok(crate::user::Protector {
+    Ok(Some(crate::user::Protector {
         blob: std::fs::read(dir.join(format!("{id}.spblob"))).with_context(|| format!("read the blob in {}", dir.display()))?,
         bound,
         id,
         lock,
-    })
+    }))
 }
 
 /// Which of the secure world's slots a user's enrolments sit in. What the
@@ -467,7 +490,20 @@ const TAG_BYTES: usize = 16;
 /// owner's own secret gave. The owner's files open, their shared storage
 /// shows at /sdcard.
 fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owner: Option<&Token>) -> Result<Note> {
-    let protector = protector(user)?;
+    let Some(protector) = protector(user)? else {
+        // A user who set no screen lock has no secret behind a credential:
+        // the key for their own files is one the key service unwraps, as it
+        // unwraps the key for the files readable before anyone signs in.
+        let mode = std::fs::read_to_string(FILE_MODE).with_context(|| format!("read {FILE_MODE}"))?;
+        let wrapped = crate::fscrypt::hardware_wrapped(mode.trim());
+        let dir = Path::new(USER_KEYS).join("ce").join(user.to_string()).join("current");
+        let raw = hardware_key(service, &dir, wrapped)?;
+        crate::fscrypt::add_key(Path::new(MOUNT), &raw, wrapped)?;
+        if user == OWNER {
+            show_owner_storage()?;
+        }
+        return Ok(Note::default());
+    };
     let stretched = match &protector.lock {
         Some(lock) => {
             let typed = match made_up_credential(service, user, &protector.id, owner)? {
@@ -609,6 +645,20 @@ mod tests {
     fn the_key_is_in_a_directory_under_the_one_the_phone_names() {
         let e = entry("keydirectory=/metadata/vold/metadata_encryption");
         assert_eq!(key_dir(&e).unwrap(), Path::new("/metadata/vold/metadata_encryption/key"));
+    }
+
+    #[test]
+    fn a_user_who_set_no_screen_lock_has_no_protector_and_no_blob() {
+        let dir = std::env::temp_dir().join(format!("skyward-protector-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // A phone that never had a screen lock keeps no folder for the
+        // user's blobs at all: nothing is behind a credential.
+        assert!(protector_in(&dir, 0).unwrap().is_none(), "no folder is no protector");
+        // A folder that is there but holds no blob is the same: a lock was
+        // cleared, and nothing is behind one.
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(protector_in(&dir, 0).unwrap().is_none(), "no blob is no protector");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
