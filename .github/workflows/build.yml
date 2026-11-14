@@ -157,11 +157,10 @@ jobs:
         run: |
           zip -9 "$NAME.zip" "$NAME.img"
           [ "$LEGACY" = "$NAME" ] || zip -9 "$LEGACY.zip" "$LEGACY.img"
-      # The artifact takes the zip's name. The release that carries the
-      # older name too hands out two files, and an artifact left unarchived
-      # holds one.
+      # The artifact takes the zip's name, and an artifact left unarchived
+      # holds one file: the release that carries the older name too hands
+      # out its second zip as an artifact of its own.
       - uses: actions/upload-artifact@v7
-        if: ${{ steps.pack.outputs.legacy == steps.pack.outputs.name }}
         with:
           path: out/${{ steps.pack.outputs.name }}.zip
           archive: false
@@ -170,8 +169,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ steps.pack.outputs.legacy != steps.pack.outputs.name }}
         with:
-          name: ${{ steps.pack.outputs.name }}
-          path: out/*.zip
+          name: ${{ steps.pack.outputs.legacy }}
+          path: out/${{ steps.pack.outputs.legacy }}.zip
+          archive: false
           if-no-files-found: error
           retention-days: 7
 
@@ -205,17 +205,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          shopt -s nullglob
           zips=()
           for config in devices/*.toml; do
             device=$(basename "$config" .toml)
-            # Only the name the zip has now; the release made before the
-            # change carries the older name beside it from its own build,
-            # and every release asks for this one.
-            matches=(images/skyward-"$GITHUB_REF_NAME"-"$device".zip)
-            [ ${#matches[@]} -gt 0 ] || continue
-            model=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["device"]["model"])' "$config")
-            zips+=("${matches[0]}#$model ($device)")
+            # Every zip whose name is the release's and the phone's: the one
+            # the zip has now, and the older name the release before the
+            # change carries too. A phone this build left out has none.
+            for zip in images/skyward-"$GITHUB_REF_NAME"-"$device".zip images/skyward-"$GITHUB_REF_NAME"-"$device"-*.zip; do
+              [ -f "$zip" ] || continue
+              model=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["device"]["model"])' "$config")
+              zips+=("$zip#$model ($device)")
+            done
           done
           [ ${#zips[@]} -gt 0 ] || { echo "no images to publish"; exit 1; }
           flags=()
