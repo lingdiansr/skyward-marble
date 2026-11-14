@@ -157,13 +157,21 @@ jobs:
         run: |
           zip -9 "$NAME.zip" "$NAME.img"
           [ "$LEGACY" = "$NAME" ] || zip -9 "$LEGACY.zip" "$LEGACY.img"
-      # The artifact takes the zip's name.
+      # The artifact takes the zip's name. The release that carries the
+      # older name too hands out two files, and an artifact left unarchived
+      # holds one.
       - uses: actions/upload-artifact@v7
+        if: ${{ steps.pack.outputs.legacy == steps.pack.outputs.name }}
         with:
-          # Both, where the older name is carried too: a path that matches
-          # nothing fails the step otherwise.
-          path: out/*.zip
+          path: out/${{ steps.pack.outputs.name }}.zip
           archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: ${{ steps.pack.outputs.legacy != steps.pack.outputs.name }}
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: out/*.zip
           if-no-files-found: error
           retention-days: 7
 
