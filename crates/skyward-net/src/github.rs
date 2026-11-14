@@ -85,7 +85,10 @@ struct Message {
 fn newest_of(releases: &[Release], codename: &str, running: &str) -> Result<Newest> {
     let this = semver::Version::parse(running)
         .with_context(|| format!("this build's version is {running}"))?;
-    let mut newest: Option<(semver::Version, &Release, &str)> = None;
+    // The releases that are newer than this build, the newest first: the
+    // newest one may carry no zip for the phone, as a release left out for
+    // it, and the one before it is then the newest this phone can have.
+    let mut newer: Vec<(semver::Version, &Release)> = Vec::new();
     for release in releases.iter().filter(|r| !r.draft) {
         let Some(version) = release.tag_name.strip_prefix('v') else {
             continue;
@@ -93,45 +96,73 @@ fn newest_of(releases: &[Release], codename: &str, running: &str) -> Result<Newe
         let Ok(parsed) = semver::Version::parse(version) else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(best, _, _)| parsed > *best) {
-            newest = Some((parsed, release, version));
-        }
+        newer.push((parsed, release));
     }
-    let Some((version, release, text)) = newest else {
-        bail!("GitHub answers no release of Skyward")
-    };
+    newer.retain(|(parsed, _)| *parsed > this);
+    newer.sort_by(|(a, _), (b, _)| b.cmp(a));
+    if newer.is_empty() {
+        // Nothing newer: the newest release stands, with no zip to go to.
+        let mut newest: Option<(semver::Version, &Release)> = None;
+        for release in releases.iter().filter(|r| !r.draft) {
+            let Some(version) = release.tag_name.strip_prefix('v') else {
+                continue;
+            };
+            let Ok(parsed) = semver::Version::parse(version) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(best, _)| parsed > *best) {
+                newest = Some((parsed, release));
+            }
+        }
+        let Some((_, release)) = newest else {
+            bail!("GitHub answers no release of Skyward")
+        };
+        return Ok(Newest { version: version_of(release)?, newer: false, build: None });
+    }
     // Each zip is named skyward-, the tag, and the phone's codename. A
     // release also carries the name builds made before this had, with the
     // stock build after the codename, but only so that those builds find
     // it: this one knows the name the zip has now.
-    let name = format!("skyward-{}-{codename}.zip", release.tag_name);
-    let build = match release.assets.iter().find(|a| a.name == name) {
-        None => None,
-        Some(a) => {
-            let sha256 = a
-                .digest
-                .as_deref()
-                .and_then(|d| d.strip_prefix("sha256:"))
-                .with_context(|| format!("GitHub gives no SHA-256 of {}", a.name))?;
-            ensure!(
-                sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
-                "GitHub gives {} the SHA-256 {sha256}",
-                a.name
-            );
-            Some(Build {
-                sha256: sha256.to_lowercase(),
-                name: a.name.clone(),
-                url: a.url.clone(),
-                link: a.browser_download_url.clone(),
-                size: a.size,
-            })
+    for (version, release) in &newer {
+        if let Some(build) = zip_for(release, codename)? {
+            return Ok(Newest { version: version.to_string(), newer: true, build: Some(build) });
         }
+    }
+    // Newer releases there are, and none has this phone's zip: the newest
+    // of them is what the screen tells of.
+    let version = newer[0].0.to_string();
+    Ok(Newest { version, newer: true, build: None })
+}
+
+/// The tag of `release` without its leading v.
+fn version_of(release: &Release) -> Result<String> {
+    let version = release.tag_name.strip_prefix('v').with_context(|| format!("GitHub names a release {}", release.tag_name))?;
+    Ok(version.to_string())
+}
+
+/// `release`'s zip for the phone `codename` names, where it has one.
+fn zip_for(release: &Release, codename: &str) -> Result<Option<Build>> {
+    let name = format!("skyward-{}-{codename}.zip", release.tag_name);
+    let Some(a) = release.assets.iter().find(|a| a.name == name) else {
+        return Ok(None);
     };
-    Ok(Newest {
-        version: text.to_string(),
-        newer: version > this,
-        build,
-    })
+    let sha256 = a
+        .digest
+        .as_deref()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .with_context(|| format!("GitHub gives no SHA-256 of {}", a.name))?;
+    ensure!(
+        sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+        "GitHub gives {} the SHA-256 {sha256}",
+        a.name
+    );
+    Ok(Some(Build {
+        sha256: sha256.to_lowercase(),
+        name: a.name.clone(),
+        url: a.url.clone(),
+        link: a.browser_download_url.clone(),
+        size: a.size,
+    }))
 }
 
 /// The release in `answer`, a single release GitHub gives, and its zip for
@@ -241,19 +272,24 @@ mod tests {
         );
     }
 
-    /// A release of `v0.1.3` holding the zips named in `names`, each with a
-    /// SHA-256 GitHub gives.
+    /// A release tagged `v0.1.3` holding the zips named in `names`, each
+    /// with a SHA-256 GitHub gives.
     fn release_naming(names: &[&str]) -> String {
+        release_tagged("v0.1.3", names)
+    }
+
+    /// A release tagged `tag` holding the zips named in `names`.
+    fn release_tagged(tag: &str, names: &[&str]) -> String {
         let assets: Vec<String> = names
             .iter()
             .map(|name| {
                 format!(
-                    r#"{{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/1","id":1,"name":"{name}","label":"","content_type":"application/octet-stream","state":"uploaded","size":42739608,"digest":"sha256:62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/{name}"}}"#
+                    r#"{{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/1","id":1,"name":"{name}","label":"","content_type":"application/octet-stream","state":"uploaded","size":42739608,"digest":"sha256:62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534","browser_download_url":"https://github.com/kirklin/skyward/releases/download/{tag}/{name}"}}"#
                 )
             })
             .collect();
         format!(
-            r#"{{"tag_name":"v0.1.3","draft":false,"assets":[{}]}}"#,
+            r#"{{"tag_name":"{tag}","draft":false,"assets":[{}]}}"#,
             assets.join(",")
         )
     }
@@ -372,6 +408,30 @@ mod tests {
             locate(&agent, &url, "0.1.2").is_err(),
             "the file itself, with no address to download it from again"
         );
+    }
+
+    #[test]
+    fn a_newer_release_without_this_phone_s_zip_gives_the_newest_one_that_has_it() {
+        // The newest release was made without this phone's zip; the one
+        // before it, still newer than this build, is the one to go to.
+        let older = release_naming(&["skyward-v0.1.3-ishtar.zip"]);
+        let gap = release_tagged("v0.1.4", &["skyward-v0.1.4-marble.zip"]);
+        let answer = format!("[{older},{gap}]");
+        let releases: Vec<Release> = serde_json::from_str(&answer).unwrap();
+        let n = newest_of(&releases, "ishtar", "0.1.2").unwrap();
+        assert_eq!(n.version, "0.1.3", "the newest release with a zip for this phone");
+        assert!(n.newer);
+        assert_eq!(n.build.unwrap().name, "skyward-v0.1.3-ishtar.zip");
+        // 0.1.4 carries no zip for this phone, and 0.1.3 is what this build
+        // is: nothing newer holds one.
+        let n = newest_of(&releases, "ishtar", "0.1.3").unwrap();
+        assert!(n.build.is_none(), "the newer release has no zip for it");
+        assert!(n.newer);
+        // A phone no newer release has a zip for sees the newest release,
+        // and the screen says there is none for it.
+        let n = newest_of(&releases, "nezha", "0.1.2").unwrap();
+        assert_eq!(n.version, "0.1.4");
+        assert!(n.build.is_none());
     }
 
     #[test]

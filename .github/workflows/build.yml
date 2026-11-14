@@ -128,12 +128,14 @@ jobs:
           STOCK: ${{ steps.stock.outputs.version }}
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="${GITHUB_SHA::7}"; fi
-          # The zip is named after the phone alone. A build that is already
-          # on a phone looks for the stock build after the codename, so the
-          # image is handed out under that name too, until no phone expects
-          # it; the name without it is the one the updater takes first.
+          # The zip is named after the phone alone. v0.2.0-rc.4 was made
+          # before that, and is the one release that carries the older name
+          # too, with the stock build after the codename: a build made then
+          # reads no other, and the releases after this one carry only the
+          # name the zip has now.
           name="skyward-$version-$DEVICE"
-          legacy="skyward-$version-$DEVICE-$STOCK"
+          legacy="$name"
+          if [ "$GITHUB_REF_NAME" = "v0.2.0-rc.4" ]; then legacy="skyward-$version-$DEVICE-$STOCK"; fi
           mkdir out
           # A device whose stock recovery lacks libraries its programs need
           # keeps them beside its configuration.
@@ -158,9 +160,9 @@ jobs:
       # The artifact takes the zip's name.
       - uses: actions/upload-artifact@v7
         with:
-          path: |
-            out/${{ steps.pack.outputs.name }}.zip
-            out/${{ steps.pack.outputs.legacy }}.zip
+          # Both, where the older name is carried too: a path that matches
+          # nothing fails the step otherwise.
+          path: out/*.zip
           archive: false
           if-no-files-found: error
           retention-days: 7
@@ -199,17 +201,13 @@ jobs:
           zips=()
           for config in devices/*.toml; do
             device=$(basename "$config" .toml)
-            # The name the updater takes first, then the one the build
-            # made before it looks for.
-            matches=(images/skyward-"$GITHUB_REF_NAME"-"$device".zip images/skyward-"$GITHUB_REF_NAME"-"$device"-*.zip)
+            # Only the name the zip has now; the release made before the
+            # change carries the older name beside it from its own build,
+            # and every release asks for this one.
+            matches=(images/skyward-"$GITHUB_REF_NAME"-"$device".zip)
             [ ${#matches[@]} -gt 0 ] || continue
             model=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["device"]["model"])' "$config")
-            # Both names go on the release: the one without the stock build
-            # is what the updater takes, and the one with it is what a build
-            # made before the rename looks for.
-            while IFS= read -r zip; do
-              zips+=("$zip#$model ($device)")
-            done < <(printf '%s\n' "${matches[@]}")
+            zips+=("${matches[0]}#$model ($device)")
           done
           [ ${#zips[@]} -gt 0 ] || { echo "no images to publish"; exit 1; }
           flags=()

@@ -350,7 +350,7 @@ fn protector(user: u32) -> Result<Option<crate::user::Protector>> {
 /// [`protector`] for the folder a user's blobs are kept in.
 fn protector_in(dir: &Path, user: u32) -> Result<Option<crate::user::Protector>> {
     let mut ids = Vec::new();
-    let entries = match std::fs::read_dir(&dir) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // A user who has set no screen lock has no synthetic password, and
         // the phone keeps no blob for one: nothing is behind a credential,
