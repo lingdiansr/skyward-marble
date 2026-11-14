@@ -30,8 +30,9 @@ pub struct Newest {
 /// A phone's zip in a release, which holds Skyward's image for the phone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Build {
-    /// The zip's own name, such as
-    /// skyward-v0.1.4-ishtar-OS3.0.308.0.WMACNXM.zip.
+    /// The zip's own name, such as skyward-v0.1.4-ishtar.zip, or the one a
+    /// release publishes for builds made before the stock build left the
+    /// name, skyward-v0.1.4-ishtar-OS3.0.308.0.WMACNXM.zip.
     pub name: String,
     /// Where GitHub's API hands it out, which [`locate`] asks for where the
     /// file itself is.
@@ -101,14 +102,15 @@ fn newest_of(releases: &[Release], codename: &str, running: &str) -> Result<Newe
     let Some((version, release, text)) = newest else {
         bail!("GitHub answers no release of Skyward")
     };
-    // Each zip is named skyward-, the tag, the phone's codename, and the
-    // stock build the image is made on.
-    let start = format!("skyward-{}-{codename}-", release.tag_name);
-    let build = match release
-        .assets
-        .iter()
-        .find(|a| a.name.starts_with(&start) && a.name.ends_with(".zip"))
-    {
+    // Each zip is named skyward-, the tag, and the phone's codename. Builds
+    // made while the stock build was part of the name looked for it after
+    // the codename, so a release carries its zip under both names, and the
+    // name with nothing after the codename is the one to take.
+    let start = format!("skyward-{}-{codename}", release.tag_name);
+    let named = |wanted: &str| release.assets.iter().find(|a| a.name == wanted);
+    let asset = named(&format!("{start}.zip"))
+        .or_else(|| release.assets.iter().find(|a| a.name.starts_with(&format!("{start}-")) && a.name.ends_with(".zip")));
+    let build = match asset {
         None => None,
         Some(a) => {
             let sha256 = a
@@ -242,6 +244,45 @@ mod tests {
                 .size,
             43145196
         );
+    }
+
+    /// A release of `v0.1.3` holding the zips named in `names`, each with a
+    /// SHA-256 GitHub gives.
+    fn release_naming(names: &[&str]) -> String {
+        let assets: Vec<String> = names
+            .iter()
+            .map(|name| {
+                format!(
+                    r#"{{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/1","id":1,"name":"{name}","label":"","content_type":"application/octet-stream","state":"uploaded","size":42739608,"digest":"sha256:62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/{name}"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"tag_name":"v0.1.3","draft":false,"assets":[{}]}}"#,
+            assets.join(",")
+        )
+    }
+
+    #[test]
+    fn a_release_names_its_zip_after_the_phone_and_still_answers_the_old_name() {
+        // A build made before the rename looks for the stock build after
+        // the codename; the zip without it is the one the updater takes.
+        let both = release_naming(&[
+            "skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip",
+            "skyward-v0.1.3-ishtar.zip",
+        ]);
+        assert_eq!(
+            newest(&both, "ishtar", "0.1.2").unwrap().build.unwrap().name,
+            "skyward-v0.1.3-ishtar.zip",
+            "the name without the stock build, though the old one is there"
+        );
+        // A release that carries only the old name still answers: a build
+        // that left it behind is what this is read by.
+        let old = release_naming(&["skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip"]);
+        assert_eq!(newest(&old, "ishtar", "0.1.2").unwrap().build.unwrap().name, "skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip");
+        // A zip whose name only starts with the codename is another phone's.
+        let similar = release_naming(&["skyward-v0.1.3-ishtar2.zip"]);
+        assert_eq!(newest(&similar, "ishtar", "0.1.2").unwrap().build, None);
     }
 
     #[test]

@@ -228,15 +228,16 @@ the data partition.
 
 Skyward needs an unlocked bootloader. Download the zip for this phone from the
 fork's [Releases](https://github.com/lingdiansr/skyward-marble/releases), or
-build the image as [Building](#building) shows. Each zip is named for the phone's
-model and codename, such as Redmi Note 12 Turbo (marble), and its version follows
-upstream's with a pre-release suffix, such as `v0.2.0-rc.3`. Check it against
+build the image as [Building](#building) shows. Each zip is named after its
+version and the phone's codename, such as `skyward-v0.2.0-rc.3-marble.zip`, and
+its version follows upstream's with a pre-release suffix, such as `v0.2.0-rc.3`;
+the release shows it under the phone's model too. Check it against
 `SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
 the slot the phone runs from, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.zip
-fastboot flash recovery skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.img
+unzip skyward-v0.2.0-rc.3-marble.zip
+fastboot flash recovery skyward-v0.2.0-rc.3-marble.img
 fastboot reboot recovery
 ```
 

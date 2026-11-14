@@ -201,11 +201,11 @@ Release 标为预发布。
 
 ## 安装 Skyward
 
-Skyward 需要已解锁的 bootloader。从本 fork 的 [Releases](https://github.com/lingdiansr/skyward-marble/releases) 下载对应机型的 zip，或者按[构建](#构建)中的步骤构建镜像。每个 zip 都标有机型和代号，例如 Redmi Note 12 Turbo (marble)，版本在上游版本后加预发布后缀，例如 `v0.2.0-rc.3`。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
+Skyward 需要已解锁的 bootloader。从本 fork 的 [Releases](https://github.com/lingdiansr/skyward-marble/releases) 下载对应机型的 zip，或者按[构建](#构建)中的步骤构建镜像。每个 zip 以版本和机型代号命名，例如 `skyward-v0.2.0-rc.3-marble.zip`；版本在上游版本后加预发布后缀，例如 `v0.2.0-rc.3`，发布页上同时标出机型。使用 `SHA256SUMS` 核对并解压之后，在手机处于 fastboot 模式的时候，把其中的镜像刷入当前运行槽位的 recovery 分区：
 
 ```sh
-unzip skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.zip
-fastboot flash recovery skyward-v0.2.0-rc.3-marble-OS3.0.5.0.VMRCNXM.img
+unzip skyward-v0.2.0-rc.3-marble.zip
+fastboot flash recovery skyward-v0.2.0-rc.3-marble.img
 fastboot reboot recovery
 ```
 
