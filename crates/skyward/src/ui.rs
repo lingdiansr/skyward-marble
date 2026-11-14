@@ -759,7 +759,13 @@ fn part_stop(stop: partwork::Stop) -> PartStop {
 fn read_filesystems() -> Result<Vec<FsRow>> {
     let mut rows = Vec::new();
     for (name, point) in [(DATA_PARTITION, "/data"), ("metadata", "/metadata"), ("cache", "/cache")] {
-        let entries = fstab::read(point)?;
+        // The cache partition is the phone's own table's to name: the
+        // recovery's copy names this phone's rescue partition after one,
+        // and that is not offered to be made afresh.
+        let entries = match name {
+            "cache" => fstab::installed(point)?,
+            _ => fstab::read(point)?,
+        };
         let Some(entry) = entries.first() else { continue };
         let device = fstab::device(entry)?;
         let size = skyward_block::size_bytes(&device)?;
@@ -1408,6 +1414,14 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let mut drive_at = Instant::now();
     loop {
         let now = monotonic_ms();
+        // The install the user started is watched to its end: the panel
+        // stays lit while it runs, so that a screen the time set for it put
+        // out cannot be taken for the phone having gone off, and no key
+        // held in that belief cuts the package short. One the user put out
+        // with the power key stays out.
+        if installer.is_some() {
+            app.hold_on(now);
+        }
         if leave_at.is_some_and(|at| now >= at) {
             leave_at = None;
             power(leave)?;

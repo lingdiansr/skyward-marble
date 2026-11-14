@@ -3120,6 +3120,15 @@ impl App {
         self.display_on
     }
 
+    /// Hold the panel on while work the user watches runs: the time the
+    /// screen stays on counts from now, as a touch makes it count. A panel
+    /// the user put out with the power key stays out, and none is lit.
+    pub fn hold_on(&mut self, now: u64) {
+        if self.display_on {
+            self.active = Some(now);
+        }
+    }
+
     /// The backlight at `now`: off, or this share of the brightness at the
     /// slider's top, which holds as the content goes dark after the panel
     /// is told to go off.
@@ -11638,6 +11647,28 @@ mod tests {
         app.touch(Touch::Move(track.x + track.w, y), &f, 30);
         assert!(app.touch(Touch::Up, &f, 40).is_empty(), "no reboot from a dark panel");
         assert!(!app.display_on());
+    }
+
+    #[test]
+    fn an_install_under_way_keeps_the_panel_lit() {
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.tick(OFF - 10_000);
+        app.hold_on(OFF - 10_000);
+        app.tick(OFF - 5_000);
+        assert!(app.display_on(), "the time the screen stays on counts from the last word of the install");
+        app.tick(2 * OFF);
+        assert!(!app.display_on(), "with no word, the panel goes out once the time has passed");
+    }
+
+    #[test]
+    fn a_panel_the_user_put_out_is_not_lit_by_an_install() {
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.tick(0);
+        assert!(app.key(Key::Power, 1000).is_empty());
+        assert_eq!(app.tick(1000 + CHORD_MS), vec![Effect::Ticks]);
+        assert!(!app.display_on());
+        app.hold_on(1000 + CHORD_MS + 100);
+        assert!(!app.display_on(), "a panel the user put out stays out");
     }
 
     #[test]

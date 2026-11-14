@@ -20,7 +20,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
 use skyward_sys::{kmsg, prop};
-use skyward_vab::{Slot, SlotMaps, SnapshotState};
+use skyward_vab::{Slot, SlotMaps, SnapshotState, UpdateState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
@@ -949,8 +949,25 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
         return Ok(Done::Decided(Outcome::Refused(refusal)));
     }
     let state = skyward_vab::snapshot_state()?;
-    if state != SnapshotState::None {
+    // An update the phone cut off while it was written never finished, and
+    // cannot be finished: the package about to be installed replaces what
+    // it was writing, so it is given up rather than keeping the package
+    // from starting.
+    let stopped = state == SnapshotState::Snapshotted
+        && skyward_vab::update()?.is_some_and(|update| update.state == UpdateState::Initiated);
+    if state != SnapshotState::None && !stopped {
         return Ok(Done::Decided(Outcome::Refused(Refusal::Pending(state))));
+    }
+    // The package goes over the partitions whole rather than through
+    // snapshots: the recovery writes the slot it goes to in full anyway, and
+    // a snapshot update leaves a state that keeps the next package from
+    // starting where a stop cuts this one off. The folder update_engine
+    // keeps snapshots in goes, and it writes the partitions instead.
+    let taken = skyward_block::cache::forget_update().context("take away the update's snapshots")?;
+    if taken > 0 {
+        let _ = kmsg(&format!(
+            "install: {taken} bytes of an update's state taken away, and the package is written over the partitions"
+        ));
     }
     // The screen may have left the page before it heard the package came.
     if ctx.shared.cancelled() {

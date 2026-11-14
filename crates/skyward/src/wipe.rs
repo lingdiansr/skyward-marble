@@ -492,9 +492,11 @@ fn forget_cache_inodes(folders: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// The cache partition, where the phone has one.
+/// The cache partition, where the phone has one: the installed system's
+/// table names it, not the recovery's copy, which names this phone's rescue
+/// partition after one.
 pub fn cache() -> Result<Option<Entry>> {
-    Ok(fstab::read(CACHE)?.into_iter().next())
+    Ok(fstab::installed(CACHE)?.into_iter().next())
 }
 
 /// The first entry the phone's table has for `mount_point`: the one the

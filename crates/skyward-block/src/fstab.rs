@@ -4,8 +4,16 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Where the phone's own partitions keep the table.
+/// Where the installed system keeps the table, the newer one. A phone with
+/// two copies of it keeps them both here.
 pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
+
+/// The copy of the table the recovery's ramdisk keeps, there whatever is
+/// mounted. An install turns the installed system's partitions away before
+/// it writes, so the erase that follows the package finds the table here:
+/// the entries to find /data and /metadata, while the entries the phone's
+/// own table has and this copy does not, as this phone's /cache, stay off.
+pub const COPY: &str = "/etc/recovery.fstab";
 
 /// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,10 +59,17 @@ pub fn entries(text: &str) -> Vec<Entry> {
     out
 }
 
-/// Every entry of the phone's own table, read from wherever the table is.
+/// Every entry of the phone's own table, read from wherever the table is:
+/// the installed system's, and the recovery's copy of it after them.
 fn table() -> Result<Vec<Entry>> {
+    let files: Vec<&str> = FILES.into_iter().chain(std::iter::once(COPY)).collect();
+    read_files(&files)
+}
+
+/// Every entry in `files`, each of which may be missing.
+fn read_files(files: &[&str]) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
-    for file in FILES {
+    for file in files {
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -68,6 +83,14 @@ fn table() -> Result<Vec<Entry>> {
 /// What the phone's own table says about `mount_point`.
 pub fn read(mount_point: &str) -> Result<Vec<Entry>> {
     Ok(table()?.into_iter().filter(|e| e.mount_point == mount_point).collect())
+}
+
+/// What the installed system's table says about `mount_point`, without the
+/// recovery's copy: what the phone itself keeps the table of is the one to
+/// go by where it is there, as for the cache partition this phone's own
+/// table has not and the copy names after a partition of another kind.
+pub fn installed(mount_point: &str) -> Result<Vec<Entry>> {
+    Ok(read_files(&FILES)?.into_iter().filter(|e| e.mount_point == mount_point).collect())
 }
 
 /// What the phone's own table says about the partition `name`: the first
@@ -165,5 +188,34 @@ mod tests {
     fn comments_and_short_lines_are_passed_over() {
         assert!(entries("# nothing\n\n/dev/x /y f2fs rw\n").is_empty());
         assert_eq!(entries(TABLE).len(), 3);
+    }
+
+    #[test]
+    fn the_copys_entries_come_after_the_installed_systems_and_a_missing_file_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("skyward-fstab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join("fstab.qcom");
+        let copy = dir.join("recovery.fstab");
+        std::fs::write(&installed, "/dev/block/by-name/userdata /data f2fs noatime formattable\n").unwrap();
+        std::fs::write(
+            &copy,
+            "/dev/block/by-name/userdata /data f2fs noatime formattable,keydirectory=/metadata\n\
+             /dev/block/by-name/metadata /metadata ext4 noatime formattable\n\
+             /dev/block/by-name/rescue /cache ext4 noatime wait\n",
+        )
+        .unwrap();
+        let gone = dir.join("gone.fstab");
+        let files: Vec<String> = [&installed, &gone, &copy].map(|p| p.to_string_lossy().into_owned()).to_vec();
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        let table = read_files(&files).unwrap();
+        let data: Vec<&Entry> = table.iter().filter(|e| e.mount_point == "/data").collect();
+        assert_eq!(data.len(), 2, "the missing file is no entry, and the copy answers too");
+        assert!(data[0].extra("keydirectory").is_none(), "the installed system's entry comes first");
+        assert!(data[1].extra("keydirectory").is_some(), "then the copy's");
+        // The copy's entries the installed system's does not have answer too: the
+        // erase after an install finds /data and /metadata by them.
+        assert!(table.iter().any(|e| e.mount_point == "/metadata"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

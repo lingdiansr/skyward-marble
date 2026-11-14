@@ -59,6 +59,27 @@ pub fn clear() -> Result<(u64, bool)> {
     Ok((freed, open))
 }
 
+/// Take away the update's whole folder on the metadata partition, where
+/// libsnapshot keeps its state and the snapshots it made. The folder goes,
+/// not only what it holds, so that update_engine finds nowhere to keep
+/// snapshots and writes a package over the partitions whole, as a recovery
+/// flashing one does: a snapshot update a stop cut off cannot go on, and its
+/// state keeps the next package from starting.
+pub fn forget_update() -> Result<u64> {
+    let metadata = Path::new(METADATA);
+    if !mount::is_mount_point(metadata)? {
+        return Ok(0);
+    }
+    mount::remount_writable(metadata, true)?;
+    let ota = Path::new("/metadata/ota");
+    let freed = size(ota)?;
+    match fs::remove_dir_all(ota) {
+        Ok(()) => Ok(freed),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e).with_context(|| format!("take away {}", ota.display())),
+    }
+}
+
 /// Take away what is in `folder`, which stays, and say how many bytes that
 /// was.
 fn empty(folder: &Path) -> Result<u64> {
