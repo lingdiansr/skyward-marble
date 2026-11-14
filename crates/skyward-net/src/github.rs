@@ -30,9 +30,7 @@ pub struct Newest {
 /// A phone's zip in a release, which holds Skyward's image for the phone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Build {
-    /// The zip's own name, such as skyward-v0.1.4-ishtar.zip, or the one a
-    /// release publishes for builds made before the stock build left the
-    /// name, skyward-v0.1.4-ishtar-OS3.0.308.0.WMACNXM.zip.
+    /// The zip's own name, such as skyward-v0.1.4-ishtar.zip.
     pub name: String,
     /// Where GitHub's API hands it out, which [`locate`] asks for where the
     /// file itself is.
@@ -102,15 +100,12 @@ fn newest_of(releases: &[Release], codename: &str, running: &str) -> Result<Newe
     let Some((version, release, text)) = newest else {
         bail!("GitHub answers no release of Skyward")
     };
-    // Each zip is named skyward-, the tag, and the phone's codename. Builds
-    // made while the stock build was part of the name looked for it after
-    // the codename, so a release carries its zip under both names, and the
-    // name with nothing after the codename is the one to take.
-    let start = format!("skyward-{}-{codename}", release.tag_name);
-    let named = |wanted: &str| release.assets.iter().find(|a| a.name == wanted);
-    let asset = named(&format!("{start}.zip"))
-        .or_else(|| release.assets.iter().find(|a| a.name.starts_with(&format!("{start}-")) && a.name.ends_with(".zip")));
-    let build = match asset {
+    // Each zip is named skyward-, the tag, and the phone's codename. A
+    // release also carries the name builds made before this had, with the
+    // stock build after the codename, but only so that those builds find
+    // it: this one knows the name the zip has now.
+    let name = format!("skyward-{}-{codename}.zip", release.tag_name);
+    let build = match release.assets.iter().find(|a| a.name == name) {
         None => None,
         Some(a) => {
             let sha256 = a
@@ -219,7 +214,7 @@ mod tests {
 
     /// What GitHub answered of the newest release on 2026-11-07, with the
     /// parts that do not matter here left out.
-    const ANSWERED_013: &str = r#"{"url":"https://api.github.com/repos/kirklin/skyward/releases/437365758","tag_name":"v0.1.3","name":"v0.1.3","draft":false,"prerelease":false,"assets":[{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751468","id":719751468,"name":"SHA256SUMS","label":"","content_type":"application/octet-stream","state":"uploaded","size":2337,"digest":"sha256:052f9ca757baeb2eac78c8e546bcc54178f6bb9bf9e5bde53fa81b3f48448957","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/SHA256SUMS"},{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751598","id":719751598,"name":"skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip","label":"Xiaomi 13 Ultra (ishtar)","content_type":"application/zip","state":"uploaded","size":42739608,"digest":"sha256:62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip"},{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751747","id":719751747,"name":"skyward-v0.1.3-nezha-OS4.0.4.0.XPACNXM.zip","label":"Xiaomi 17 Ultra (nezha)","content_type":"application/zip","state":"uploaded","size":43145196,"digest":"sha256:9f6165079529418d8f6635beddfdd9abf9a70c89d69eb467a9922b0db69bfaf1","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-nezha-OS4.0.4.0.XPACNXM.zip"}]}"#;
+    const ANSWERED_013: &str = r#"{"url":"https://api.github.com/repos/kirklin/skyward/releases/437365758","tag_name":"v0.1.3","name":"v0.1.3","draft":false,"prerelease":false,"assets":[{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751468","id":719751468,"name":"SHA256SUMS","label":"","content_type":"application/octet-stream","state":"uploaded","size":2337,"digest":"sha256:052f9ca757baeb2eac78c8e546bcc54178f6bb9bf9e5bde53fa81b3f48448957","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/SHA256SUMS"},{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751598","id":719751598,"name":"skyward-v0.1.3-ishtar.zip","label":"Xiaomi 13 Ultra (ishtar)","content_type":"application/zip","state":"uploaded","size":42739608,"digest":"sha256:62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar.zip"},{"url":"https://api.github.com/repos/kirklin/skyward/releases/assets/719751747","id":719751747,"name":"skyward-v0.1.3-nezha.zip","label":"Xiaomi 17 Ultra (nezha)","content_type":"application/zip","state":"uploaded","size":43145196,"digest":"sha256:9f6165079529418d8f6635beddfdd9abf9a70c89d69eb467a9922b0db69bfaf1","browser_download_url":"https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-nezha.zip"}]}"#;
 
     #[test]
     fn the_newest_release_gives_the_zip_for_the_phone() {
@@ -229,9 +224,9 @@ mod tests {
         assert_eq!(
             n.build,
             Some(Build {
-                name: "skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip".into(),
+                name: "skyward-v0.1.3-ishtar.zip".into(),
                 url: "https://api.github.com/repos/kirklin/skyward/releases/assets/719751598".into(),
-                link: "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip".into(),
+                link: "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar.zip".into(),
                 size: 42739608,
                 sha256: "62b66f7d13a0eb6c9af3359b5ec6f9c223fd9a86b1f8abab3e9d2646cb2ce534".into(),
             })
@@ -264,24 +259,17 @@ mod tests {
     }
 
     #[test]
-    fn a_release_names_its_zip_after_the_phone_and_still_answers_the_old_name() {
-        // A build made before the rename looks for the stock build after
-        // the codename; the zip without it is the one the updater takes.
-        let both = release_naming(&[
-            "skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip",
-            "skyward-v0.1.3-ishtar.zip",
-        ]);
-        assert_eq!(
-            newest(&both, "ishtar", "0.1.2").unwrap().build.unwrap().name,
-            "skyward-v0.1.3-ishtar.zip",
-            "the name without the stock build, though the old one is there"
-        );
-        // A release that carries only the old name still answers: a build
-        // that left it behind is what this is read by.
-        let old = release_naming(&["skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip"]);
-        assert_eq!(newest(&old, "ishtar", "0.1.2").unwrap().build.unwrap().name, "skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip");
-        // A zip whose name only starts with the codename is another phone's.
-        let similar = release_naming(&["skyward-v0.1.3-ishtar2.zip"]);
+    fn the_zip_is_the_one_named_after_the_phone() {
+        // The name builds made before this carried is no longer read: only
+        // a release that still has the current name answers.
+        let only_old = release_naming(&["skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip"]);
+        assert_eq!(newest(&only_old, "ishtar", "0.1.2").unwrap().build, None, "a name this build no longer reads");
+        // A release carries the old name beside the new one, for the builds
+        // that came before; this build takes the new one.
+        let both = release_naming(&["skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip", "skyward-v0.1.3-ishtar.zip"]);
+        assert_eq!(newest(&both, "ishtar", "0.1.2").unwrap().build.unwrap().name, "skyward-v0.1.3-ishtar.zip");
+        // A zip named after another phone is not this one's.
+        let similar = release_naming(&["skyward-v0.1.3-ishtar2.zip", "skyward-v0.1.3-ish.zip"]);
         assert_eq!(newest(&similar, "ishtar", "0.1.2").unwrap().build, None);
     }
 
@@ -298,7 +286,7 @@ mod tests {
         assert!(n.newer);
         assert_eq!(
             n.build.unwrap().name,
-            "skyward-v0.1.4-rc.1-marble-OS3.0.308.0.WMACNXM.zip"
+            "skyward-v0.1.4-rc.1-marble.zip"
         );
         assert!(
             !newest_of(&releases, "marble", "0.1.4-rc.1").unwrap().newer,
@@ -312,7 +300,7 @@ mod tests {
             .unwrap()
             .build
             .unwrap();
-        let link = "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip";
+        let link = "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar.zip";
         let accelerated = format!("{PROXY}{link}");
         assert_eq!(
             build.sources(Some(
@@ -430,7 +418,7 @@ mod tests {
         let e = newest(&unsummed, "ishtar", "0.1.2").unwrap_err();
         assert_eq!(
             e.to_string(),
-            "GitHub gives no SHA-256 of skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip"
+            "GitHub gives no SHA-256 of skyward-v0.1.3-ishtar.zip"
         );
         assert!(
             newest(&unsummed, "nezha", "0.1.2").is_ok(),
