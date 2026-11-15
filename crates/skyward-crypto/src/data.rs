@@ -51,15 +51,18 @@ pub struct Encryption {
 }
 
 impl Encryption {
-    /// Read what an entry of the phone's own table says.
-    pub fn of(entry: &Entry) -> Result<Encryption> {
-        let said = entry.extra("metadata_encryption").context("the phone says its data partition is not encrypted whole")?;
+    /// Read what an entry of the phone's own table says. An entry that says
+    /// nothing about encrypting the partition whole is one of a phone that
+    /// reads it as it is: the partition is mounted from its own device, and
+    /// each user's files are then encrypted on their own or not at all.
+    pub fn of(entry: &Entry) -> Result<Option<Encryption>> {
+        let Some(said) = entry.extra("metadata_encryption") else { return Ok(None) };
         let (name, rest) = said.split_once(':').unwrap_or((said, ""));
         let cipher = CIPHERS
             .iter()
             .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
             .with_context(|| format!("no cipher here is the {name} the phone names"))?;
-        Ok(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" })
+        Ok(Some(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" }))
     }
 }
 
@@ -121,7 +124,7 @@ fn open(service: &KeyMint) -> Result<Opened> {
     })();
     match mounted {
         Ok((checked, filesystem)) => Ok(Opened { mapped, filesystem, checked }),
-        Err(e) => match dm::remove(MAPPED) {
+        Err(e) => match unmap_if_mapped() {
             Ok(()) => Err(e),
             Err(r) => Err(e.context(format!("removing {MAPPED} afterwards failed too: {r:#}"))),
         },
@@ -134,11 +137,17 @@ fn open(service: &KeyMint) -> Result<Opened> {
 fn map(service: &KeyMint) -> Result<(Vec<Entry>, PathBuf)> {
     let entries = skyward_block::fstab::read(MOUNT)?;
     let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
-    let encryption = Encryption::of(entry)?;
     let device = skyward_block::fstab::device(entry)?;
-    let key = storage_key(service, entry, &encryption)?;
-    let sectors = skyward_block::size_bytes(&device)? / 512;
-    let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
+    let mapped = match Encryption::of(entry)? {
+        Some(encryption) => {
+            let key = storage_key(service, entry, &encryption)?;
+            let sectors = skyward_block::size_bytes(&device)? / 512;
+            dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?
+        }
+        // A phone whose table says nothing about encrypting the partition
+        // whole reads it as it is; nothing is mapped for it.
+        None => PathBuf::from(&device),
+    };
     Ok((entries, mapped))
 }
 
@@ -152,7 +161,17 @@ pub fn map_unmounted(service: &KeyMint) -> Result<PathBuf> {
 
 /// Take away the mapping [`map_unmounted`] made.
 pub fn unmap() -> Result<()> {
-    dm::remove(MAPPED)
+    unmap_if_mapped()
+}
+
+/// Take away the mapping of the data partition, where there is one: a
+/// partition that is not encrypted whole is read from its own device, and
+/// has none to take away.
+fn unmap_if_mapped() -> Result<()> {
+    match dm::status(MAPPED)? {
+        Some(_) => dm::remove(MAPPED),
+        None => Ok(()),
+    }
 }
 
 /// Show the owner's shared storage at /sdcard; shown already, it stays.
@@ -209,6 +228,13 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         true => None,
         false => Some(open(service)?),
     };
+    // A phone that encrypts none of its users' files keeps no key for the
+    // files readable before anyone signs in: the partition reads as it is,
+    // and no credential opens anything.
+    if !encrypts_files() {
+        show_owner_storage()?;
+        return Ok(Opening { mounted, closed: Vec::new() });
+    }
     open_shared(service)?;
     let mut closed = Vec::new();
     let mut owner = Note::default();
@@ -280,9 +306,16 @@ const FILE_MODE: &str = "/data/unencrypted/mode";
 /// Where the phone keeps each user's own keys.
 const USER_KEYS: &str = "/data/misc/vold/user_keys";
 
+/// Whether the phone encrypts its users' files at all. A phone that does
+/// writes down how the key for the files readable before anyone signs in
+/// is kept; one that encrypts none of them writes down nothing.
+fn encrypts_files() -> bool {
+    Path::new(FILE_MODE).is_file()
+}
+
 /// Let in the key for the files that belong to no one user. Until it is
 /// in, most of what the data partition holds reads as scrambled names.
-fn open_shared(service: &KeyMint) -> Result<[u8; crate::fscrypt::NAME_BYTES]> {
+fn open_shared(service: &KeyMint) -> Result<()> {
     let mode = std::fs::read_to_string(FILE_MODE).with_context(|| format!("read {FILE_MODE}"))?;
     let wrapped = crate::fscrypt::hardware_wrapped(mode.trim());
     let raw = hardware_key(service, Path::new(SHARED_KEY), wrapped)?;
@@ -291,7 +324,7 @@ fn open_shared(service: &KeyMint) -> Result<[u8; crate::fscrypt::NAME_BYTES]> {
     if name != recorded {
         anyhow::bail!("the key in {SHARED_KEY} is not the one {SHARED_NAME} names");
     }
-    Ok(name)
+    Ok(())
 }
 
 /// Which users the phone keeps keys for, in order.
@@ -310,6 +343,11 @@ fn users() -> Result<Vec<u32>> {
 /// Let in the keys for the files of each user that are readable before
 /// that user signs in, and give the users they belong to.
 fn open_users(service: &KeyMint) -> Result<Vec<u32>> {
+    // A phone that encrypts none of its users' files keeps no key for any
+    // of them.
+    if !encrypts_files() {
+        return Ok(Vec::new());
+    }
     let mode = std::fs::read_to_string(FILE_MODE).with_context(|| format!("read {FILE_MODE}"))?;
     let wrapped = crate::fscrypt::hardware_wrapped(mode.trim());
     let users = users()?;
@@ -594,14 +632,21 @@ mod tests {
     #[test]
     fn the_phones_own_words_for_the_cipher_become_the_kernels() {
         let e = entry("metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/vold/metadata_encryption");
-        assert_eq!(Encryption::of(&e).unwrap(), Encryption { cipher: "aes-xts-plain64".into(), wrapped: true });
+        assert_eq!(Encryption::of(&e).unwrap(), Some(Encryption { cipher: "aes-xts-plain64".into(), wrapped: true }));
         let plain = entry("metadata_encryption=adiantum");
-        assert_eq!(Encryption::of(&plain).unwrap(), Encryption { cipher: "xchacha12,aes-adiantum-plain64".into(), wrapped: false });
+        assert_eq!(Encryption::of(&plain).unwrap(), Some(Encryption { cipher: "xchacha12,aes-adiantum-plain64".into(), wrapped: false }));
+    }
+
+    #[test]
+    fn a_partition_the_phone_does_not_encrypt_whole_has_no_cipher() {
+        let e = entry("latemount,wait,check,formattable,reservedsize=128M");
+        assert_eq!(Encryption::of(&e).unwrap(), None);
+        let files_alone = entry("fileencryption=ice,wrappedkey,keydirectory=/metadata/vold/metadata_encryption");
+        assert_eq!(Encryption::of(&files_alone).unwrap(), None);
     }
 
     #[test]
     fn a_cipher_or_a_key_the_phone_does_not_name_is_an_error() {
-        assert!(Encryption::of(&entry("quota")).is_err());
         assert!(Encryption::of(&entry("metadata_encryption=rot13")).is_err());
         assert!(key_dir(&entry("quota")).is_err());
     }
